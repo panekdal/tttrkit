@@ -16,4 +16,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools_scm]
-write_to = "src/ptuio/_version.py"
+write_to = "src/tttrkit/_version.py"
