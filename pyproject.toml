@@ -1,0 +1,19 @@
+[project]
+name = "tttrkit"
+dynamic = ["version"]
+description = "Streaming reader and decoder for PicoQuant TTTR files"
+authors = [{name = "Dalibor Panek"}]
+dependencies = ["numpy","xarray"]
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+write_to = "src/ptuio/_version.py"

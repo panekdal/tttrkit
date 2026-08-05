@@ -1,0 +1,10 @@
+.venv/
+.conda/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+*.egg
+test/
+test/data/
+git_workflow_cheatsheet.md
