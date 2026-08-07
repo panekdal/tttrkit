@@ -3,7 +3,11 @@ name = "tttrkit"
 dynamic = ["version"]
 description = "Streaming reader and decoder for PicoQuant TTTR files"
 authors = [{name = "Dalibor Panek"}]
-dependencies = ["numpy","xarray"]
+dependencies = [
+    "numpy",
+    "scipy>=1.18.0",
+    "xarray",
+]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
@@ -17,3 +21,9 @@ where = ["src"]
 
 [tool.setuptools_scm]
 write_to = "src/tttrkit/_version.py"
+
+[tool.uv.workspace]
+members = [
+    "examples",
+    ".",
+]

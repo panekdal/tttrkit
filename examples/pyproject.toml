@@ -1,0 +1,24 @@
+[project]
+name = "examples"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Dalibor Panek", email = "dalibor.panek@natur.cuni.cz" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "jupyter>=1.1.1",
+    "matplotlib>=3.11.1",
+    "tttrkit",
+]
+
+[project.scripts]
+examples = "examples:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+tttrkit = { workspace = true, editable = true }

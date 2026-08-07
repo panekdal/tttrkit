@@ -1,10 +1,7 @@
 .venv/
-.conda/
-.pytest_cache/
-build/
-dist/
+examples/data/
+uv.lock
+__pycache__/
+*.py[cod]
 *.egg-info/
-*.egg
-test/
-test/data/
-git_workflow_cheatsheet.md
+src/tttrkit/_version.py
