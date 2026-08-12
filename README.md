@@ -1,33 +1,78 @@
 # tttrkit
 
-> **ARCHIVED REPOSITORY — NO LONGER MAINTAINED**
+**Tools for reading, streaming, and reconstructing images from PicoQuant TTTR data.**
 
-This repository is no longer under active development.
+`tttrkit` is a Python toolkit for working with time-tagged time-resolved (TTTR) data acquired with PicoQuant instrumentation. It provides tools to read TTTR data, process it in chunks, and reconstruct images (and more) according to user-defined scanning schemes.
 
-Development of **tttrkit** has moved to the following repository:
+The processing is designed around **chunk-wise streaming**, allowing large TTTR datasets to be processed without loading the complete acquisition into memory.
 
-**https://github.com/panekdal/tttrkit**
+## Features
 
-Please use the new repository for the current version of the software, ongoing development, bug fixes, and future updates.
+* Read and process PicoQuant TTTR data
+* Chunk-wise streaming of TTTR records
+* Chunk-wise image reconstruction
+* Configurable scanning schemes and acquisition configurations
+* Support for non-standard and custom scanning patterns
+* Line accumulation and repeated/sequence-based acquisitions
+* Utilities for FLIM data processing
+* Phasor analysis utilities
+* Python API suitable for interactive analysis and custom processing pipelines
+
+## Processing model
+
+`tttrkit` processes TTTR data **chunk-wise**:
+
+The complete acquisition does not need to be loaded into memory at once. This is particularly useful for large time-resolved imaging datasets where the images, histograms, phasors, etc. are reconstructed by iteration over chunks of defined size.
+
+The chunk-wise architecture also allows processing to be combined with custom analysis or downstream pipelines.
+
+## Scanning schemes
+
+A central concept in `tttrkit` is the **scanning scheme** (or acquisition configuration).
+
+This allows `tttrkit` to handle acquisition strategies such as:
+
+* standard raster scanning
+* line accumulation
+* line sequences (i.e, different acuisition settings altered between lines)
+* ...
+
+The intention is to keep the reconstruction logic independent of a particular microscope's scanning implementation.
+
+## FLIM
+
+`tttrkit` includes utilities for working with fluorescence lifetime imaging microscopy (FLIM) data.
+
+Depending on the acquisition and reconstruction configuration, the resulting data can be used for lifetime analysis and visualization.
+
+## Phasor analysis
+
+The package also contains utilities for **phasor analysis of FLIM data**, providing a frequency-domain representation of fluorescence lifetime information.
+
+These utilities are intended to facilitate analysis and visualization of FLIM datasets reconstructed from TTTR acquisitions.
+
+## Installation
+
+Install the package with:
+
+```bash
+pip install tttrkit
+```
+
+## Basic usage
+
+See the example notebooks for basic usage.
+
+## Development
+
+Development takes place on GitHub.
+
+For issues, feature requests, and contributions, please use the project's GitHub repository.
 
 ## Status
 
-This repository is retained for historical and archival purposes. It should not be used as the source for new development.
+`tttrkit` is under active development. APIs may change between versions.
 
-The repository will be archived on GitHub and therefore become read-only. GitHub recommends updating the README and repository description before archiving; archived repositories retain their code, history, issues, pull requests, releases, and other content but cannot be modified without first being unarchived.
+## License
 
-## Current repository
-
-For the actively maintained version of **tttrkit**, please visit:
-
-**[panekdal/tttrkit](https://github.com/panekdal/tttrkit)**
-
-## Historical information
-
-This repository contains the previous development history of `tttrkit` under the `IMCF-Biocev` organization.
-
-The repository is retained to preserve the historical record and provenance of the earlier development.
-
----
-
-**This repository is archived. Please use [panekdal/tttrkit](https://github.com/panekdal/tttrkit) for current development.**
+[![License MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
