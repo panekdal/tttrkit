@@ -21,8 +21,19 @@ event_dtype = np.dtype(
 def get_photons(events: np.ndarray):
     return events[(events["channel"] < 63) & (events["special"] == 0)]
 
-def get_markers(events: np.ndarray, codes):
-    return events[(events["special"] != 0) & np.isin(events["channel"], codes)]
+def get_markers(events: np.ndarray, marker_mask: int) -> np.ndarray:
+    """Return marker events containing a configured physical marker input.
+
+    ``marker_mask`` is the bit value of one marker input (1, 2, 4, or 8).
+    A composite marker is retained whenever it contains that input; for
+    example, mask ``4`` matches both marker value ``4`` and value ``6``.
+    """
+    if not isinstance(marker_mask, (int, np.integer)) or marker_mask <= 0:
+        raise ValueError("marker_mask must be a positive integer")
+
+    is_marker = (events["special"] != 0) & (events["channel"] < 63)
+    contains_marker = (events["channel"] & marker_mask) != 0
+    return events[is_marker & contains_marker]
 
 
 def decode_t3(records):

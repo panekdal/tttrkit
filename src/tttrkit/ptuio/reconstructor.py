@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from typing import Tuple, Union
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
@@ -34,9 +33,9 @@ class ScanConfig:
         ),  #  > 1 dimension means the scanning is sequential
         bidirectional: bool = False,
         bidirectional_phase_shift: float = 0.0,
-        frame_start_marker_channel: Union[int, Tuple[int, ...]] = (4,),
-        line_start_marker_channel: Union[int, Tuple[int, ...]] = (1,),
-        line_stop_marker_channel: Union[int, Tuple[int, ...]] = (2,),
+        frame_start_marker_channel: int = 4,
+        line_start_marker_channel: int = 1,
+        line_stop_marker_channel: int = 2,
     ):
         self.lines = lines
         self.pixels = pixels
@@ -55,21 +54,24 @@ class ScanConfig:
         self.bidirectional = bidirectional
         self._total_accumulations = sum(self.line_accumulations)
 
-        self.frame_start_marker_channel = (
-            (frame_start_marker_channel,)
-            if isinstance(frame_start_marker_channel, int)
-            else tuple(frame_start_marker_channel)
+        self.frame_start_marker_channel = self._validate_marker_mask(
+            frame_start_marker_channel, "frame_start_marker_channel"
         )
-        self.line_start_marker_channel = (
-            (line_start_marker_channel,)
-            if isinstance(line_start_marker_channel, int)
-            else tuple(line_start_marker_channel)
+        self.line_start_marker_channel = self._validate_marker_mask(
+            line_start_marker_channel, "line_start_marker_channel"
         )
-        self.line_stop_marker_channel = (
-            (line_stop_marker_channel,)
-            if isinstance(line_stop_marker_channel, int)
-            else tuple(line_stop_marker_channel)
+        self.line_stop_marker_channel = self._validate_marker_mask(
+            line_stop_marker_channel, "line_stop_marker_channel"
         )
+
+    @staticmethod
+    def _validate_marker_mask(marker_mask: int, name: str) -> int:
+        """Validate one physical marker-input bit used for a scan role."""
+        if not isinstance(marker_mask, (int, np.integer)):
+            raise TypeError(f"{name} must be an integer marker bit")
+        if marker_mask not in (1, 2, 4, 8):
+            raise ValueError(f"{name} must be one of 1, 2, 4, or 8")
+        return int(marker_mask)
 
 
     def to_dict(self):
@@ -93,9 +95,9 @@ class ScanConfig:
             frames=d["frames"],
             line_accumulations=d.get("line_accumulations", (1,)),
             bidirectional=d.get("bidirectional", False),
-            frame_start_marker=d.get("frame_start_marker", ()),
-            line_start_marker=d.get("line_start_marker", ()),
-            line_stop_marker=d.get("line_stop_marker", ()),
+            frame_start_marker_channel=d.get("frame_start_marker", 4),
+            line_start_marker_channel=d.get("line_start_marker", 1),
+            line_stop_marker_channel=d.get("line_stop_marker", 2),
         )
 
     def __repr__(self):
@@ -628,9 +630,7 @@ class ImageReconstructor:
         self._partial_start_nsync = None
 
     def _extract_markers(self, events, codes):
-        return events[
-            (events["special"] != 0) & np.isin(events["channel"], codes)
-        ]
+        return get_markers(events, codes)
 
     def _compute_stop_phase(
         self,
