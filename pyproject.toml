@@ -5,7 +5,6 @@ description = "Streaming reader and decoder for PicoQuant TTTR files"
 authors = [{name = "Dalibor Panek"}]
 dependencies = [
     "numpy",
-    "scipy>=1.18.0",
     "xarray",
 ]
 license = "MIT"
