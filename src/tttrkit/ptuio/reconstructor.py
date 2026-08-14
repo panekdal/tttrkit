@@ -36,12 +36,16 @@ class ScanConfig:
         frame_start_marker_channel: int = 4,
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
+        harmonic_scan: bool = False,
+        harmonic_phase: float = 0.0,
     ):
         self.lines = lines
         self.pixels = pixels
         self.frames = frames
         self.max_detector = max_detector
         self.bidirectional_phase_shift = bidirectional_phase_shift
+        self.harmonic_scan = harmonic_scan
+        self.harmonic_phase = harmonic_phase
         
 
         # Normalize line_accumulations to tuple
@@ -84,6 +88,8 @@ class ScanConfig:
             "frame_start_marker": self.frame_start_marker_channel,
             "line_start_marker": self.line_start_marker_channel,
             "line_stop_marker": self.line_stop_marker_channel,
+            "harmonic_scan": self.harmonic_scan,
+            "harmonic_phase": self.harmonic_phase,
         }
 
     # TODO modify for number of sequences
@@ -98,6 +104,8 @@ class ScanConfig:
             frame_start_marker_channel=d.get("frame_start_marker", 4),
             line_start_marker_channel=d.get("line_start_marker", 1),
             line_stop_marker_channel=d.get("line_stop_marker", 2),
+            harmonic_scan=d.get("harmonic_scan", False),
+            harmonic_phase=d.get("harmonic_phase", 0.0),
         )
 
     def __repr__(self):
@@ -195,6 +203,11 @@ class ImageReconstructor:
         self._roi_mask_stretched = None
         if roi_mask is not None:
             self._roi_mask_stretched = self._stretch_roi_mask(roi_mask)
+        
+        # Build harmonic correction lookup table
+        # self._harmonic_lut = None
+        # if self.config.harmonic_scan:
+        #     self._harmonic_lut = self._build_harmonic_lut()
 
     def update(self, events: np.ndarray):
         if self._finished:
@@ -407,6 +420,48 @@ class ImageReconstructor:
     def get_available_outputs(self):
         return list(self.requested_outputs)
 
+    def _harmonic_correction(self, temporal_phase: np.ndarray) -> np.ndarray:
+        phi = self.config.harmonic_phase
+        I = 2 * np.sin(0.5 * np.pi * phi) / (np.pi * phi)
+        y = ( np.sin(np.pi * phi / 2)  - np.cos(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))) / I / np.pi / phi
+        return y
+
+
+        # velocity = np.sin(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))
+
+        # phase_corrected = temporal_phase / velocity
+        # # phase_corrected = temporal_phase
+        # phase_corrected = 0.5 + np.arcsin(
+        #     (2 * temporal_phase - 1) * np.sin(0.5 * np.pi * phi)
+        # ) / (np.pi * phi)
+
+        # y = np.asarray(y, dtype=float)
+
+        # s = np.sin(0.5 * np.pi * phi)
+        # return 0.5 + np.arcsin((2 * temporal_phase - 1) * s) / (np.pi * phi)
+
+
+
+        # # Map temporal phase [0, 1] to absolute angle [φ, φ + 2π]
+        # angle = 2 * np.pi * temporal_phase + phi
+        
+        # # Convert scanner position (sin range [-1,1]) to pixel range [0,1]
+        # position = (np.sin(angle) + 1.0) / 2.0
+        
+        # return phase_corrected
+    
+    # def _build_harmonic_lut(self) -> np.ndarray:
+    #     """
+    #     Build lookup table for harmonic phase correction.
+    #     Maps temporal phase indices to corrected pixel phases.
+        
+    #     Returns:
+    #         Array of shape (pixels + 1,) with correction values
+    #     """
+    #     temporal_phases = np.linspace(0, 1, self.config.pixels + 1)
+    #     pixel_phases = self._harmonic_correction(temporal_phases)
+    #     return pixel_phases
+    
     def _stretch_roi_mask(self, base_mask: np.ndarray) -> np.ndarray:
         if base_mask.shape != (self.config.lines, self.config.pixels):
             raise ValueError(
@@ -560,6 +615,10 @@ class ImageReconstructor:
             photons_in_segments["nsync"].astype(np.int64)
             - segment_starts[segment_index]
         ) / (segment_ends[segment_index] - segment_starts[segment_index])
+        
+        # Apply harmonic scan correction if enabled
+        if self.config.harmonic_scan:
+            phase = self._harmonic_correction(phase)
 
         pixels = np.floor(phase * self.config.pixels).astype(int)
 
@@ -690,6 +749,7 @@ class ImageReconstructor:
         self._stop_phase_computed = True
         return
 
+# TODO: add option to select marker channels and validation of marker chan
 
 class TraceReconstructor:
     """Reconstruct time-resolved intensity traces from TTTR data.
@@ -698,7 +758,6 @@ class TraceReconstructor:
     marker times (frame start, line start, line stop) within the specified
     time window.
     """
-
     def __init__(
         self,
         start_time: float = 0.0,
