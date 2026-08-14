@@ -37,7 +37,8 @@ class ScanConfig:
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
         harmonic_scan: bool = False,
-        harmonic_phase: float = 0.0,
+        harmonic_duty: float = 0.6,
+        marker_delay: float = 0,
     ):
         self.lines = lines
         self.pixels = pixels
@@ -45,7 +46,8 @@ class ScanConfig:
         self.max_detector = max_detector
         self.bidirectional_phase_shift = bidirectional_phase_shift
         self.harmonic_scan = harmonic_scan
-        self.harmonic_phase = harmonic_phase
+        self.harmonic_duty = harmonic_duty
+        # self.marker_delay = marker_delay
         
 
         # Normalize line_accumulations to tuple
@@ -89,7 +91,7 @@ class ScanConfig:
             "line_start_marker": self.line_start_marker_channel,
             "line_stop_marker": self.line_stop_marker_channel,
             "harmonic_scan": self.harmonic_scan,
-            "harmonic_phase": self.harmonic_phase,
+            "harmonic_duty": self.harmonic_duty,
         }
 
     # TODO modify for number of sequences
@@ -105,7 +107,7 @@ class ScanConfig:
             line_start_marker_channel=d.get("line_start_marker", 1),
             line_stop_marker_channel=d.get("line_stop_marker", 2),
             harmonic_scan=d.get("harmonic_scan", False),
-            harmonic_phase=d.get("harmonic_phase", 0.0),
+            harmonic_duty=d.get("harmonic_phase", 0.0),
         )
 
     def __repr__(self):
@@ -420,11 +422,32 @@ class ImageReconstructor:
     def get_available_outputs(self):
         return list(self.requested_outputs)
 
-    def _harmonic_correction(self, temporal_phase: np.ndarray) -> np.ndarray:
-        phi = self.config.harmonic_phase
-        I = 2 * np.sin(0.5 * np.pi * phi) / (np.pi * phi)
-        y = ( np.sin(np.pi * phi / 2)  - np.cos(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))) / I / np.pi / phi
-        return y
+    def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
+        harmonic_duty = self.config.harmonic_duty
+        marker_delay = self.config.bidirectional_phase_shift
+        y = (
+            np.cos(0.5 * np.pi * (1 - harmonic_duty + marker_delay))
+            - np.cos(
+                np.pi * harmonic_duty * t
+                + 0.5 * np.pi * (1 - harmonic_duty + marker_delay)
+            )
+        ) / (np.pi * harmonic_duty)
+
+        I = (
+        2
+        * np.cos(0.5 * np.pi * marker_delay)
+        * np.sin(0.5 * np.pi * harmonic_duty)
+        / (np.pi * harmonic_duty)
+        )
+        return y / I
+
+    
+        # phi = self.config.harmonic_phase
+        # I = 2 * np.sin(0.5 * np.pi * phi) / (np.pi * phi)
+        # y = ( np.sin(np.pi * phi / 2)  - np.cos(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))) / I / np.pi / phi
+        # return y
+
+
 
 
         # velocity = np.sin(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))

@@ -29,7 +29,7 @@ def test_harmonic_phase_mapping():
             pixels=256,
             frames=1,
             harmonic_scan=True,
-            harmonic_phase=phase_offset
+            harmonic_duty=phase_offset
         )
         reconstructor = ImageReconstructor(config)
         corrected = reconstructor._harmonic_to_linear_pixel(test_phases)
@@ -50,7 +50,7 @@ def test_config_serialization():
         pixels=512,
         frames=2,
         harmonic_scan=True,
-        harmonic_phase=np.pi/4
+        harmonic_duty=np.pi/4
     )
     
     config_dict = config.to_dict()
@@ -66,7 +66,7 @@ def test_config_serialization():
     # Test deserialization
     config2 = ScanConfig.from_dict(config_dict)
     assert config2.harmonic_scan == config.harmonic_scan
-    assert config2.harmonic_phase == config.harmonic_phase
+    assert config2.harmonic_duty == config.harmonic_duty
     print("✓ Harmonic parameters correctly deserialized")
 
 
