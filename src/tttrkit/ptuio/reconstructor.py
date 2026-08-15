@@ -47,7 +47,7 @@ class ScanConfig:
         self.bidirectional_phase_shift = bidirectional_phase_shift
         self.harmonic_scan = harmonic_scan
         self.harmonic_duty = harmonic_duty
-        # self.marker_delay = marker_delay
+        self.marker_delay = marker_delay
         
 
         # Normalize line_accumulations to tuple
@@ -424,7 +424,8 @@ class ImageReconstructor:
 
     def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
         harmonic_duty = self.config.harmonic_duty
-        marker_delay = self.config.bidirectional_phase_shift
+        # marker_delay = self.config.bidirectional_phase_shift *2
+        marker_delay = 0
         y = (
             np.cos(0.5 * np.pi * (1 - harmonic_duty + marker_delay))
             - np.cos(
@@ -570,12 +571,50 @@ class ImageReconstructor:
 
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
+        marker_delay = int(
+                        self.config.marker_delay * self.line_duration
+                    )
+
+
         if self.config.bidirectional:
             shift = int(
                 self.config.bidirectional_phase_shift * self.line_duration
             )
-            start[reversed_mask] += shift
-            stop[reversed_mask] += shift
+            shift = int(
+                self.config.bidirectional_phase_shift * self.line_duration
+            )
+
+            start += shift
+            stop += shift
+            start[~reversed_mask] -= marker_delay
+            stop[~reversed_mask] -= marker_delay
+            start[reversed_mask] += marker_delay
+            stop[reversed_mask] +=  marker_delay
+
+        else:
+            start += marker_delay
+            stop += marker_delay
+   
+
+
+
+
+            # start[~reversed_mask] -= shift
+            # stop[~reversed_mask] -= shift
+            # start[reversed_mask] += shift
+            # stop[reversed_mask] +=  shift
+            # marker_delay = int(
+            #     self.config.marker_delay * self.line_duration
+            # )
+
+
+
+            # start -= shift 
+            # stop -= shift
+            # start -= marker_delay
+            # stop += marker_delay
+
+
 
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
