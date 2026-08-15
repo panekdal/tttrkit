@@ -424,67 +424,21 @@ class ImageReconstructor:
 
     def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
         harmonic_duty = self.config.harmonic_duty
-        # marker_delay = self.config.bidirectional_phase_shift *2
-        marker_delay = 0
         y = (
-            np.cos(0.5 * np.pi * (1 - harmonic_duty + marker_delay))
+            np.cos(0.5 * np.pi * (1 - harmonic_duty))
             - np.cos(
                 np.pi * harmonic_duty * t
-                + 0.5 * np.pi * (1 - harmonic_duty + marker_delay)
+                + 0.5 * np.pi * (1 - harmonic_duty)
             )
         ) / (np.pi * harmonic_duty)
 
         I = (
         2
-        * np.cos(0.5 * np.pi * marker_delay)
         * np.sin(0.5 * np.pi * harmonic_duty)
         / (np.pi * harmonic_duty)
         )
         return y / I
 
-    
-        # phi = self.config.harmonic_phase
-        # I = 2 * np.sin(0.5 * np.pi * phi) / (np.pi * phi)
-        # y = ( np.sin(np.pi * phi / 2)  - np.cos(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))) / I / np.pi / phi
-        # return y
-
-
-
-
-        # velocity = np.sin(np.pi * phi * temporal_phase + 0.5 * np.pi * (1-phi))
-
-        # phase_corrected = temporal_phase / velocity
-        # # phase_corrected = temporal_phase
-        # phase_corrected = 0.5 + np.arcsin(
-        #     (2 * temporal_phase - 1) * np.sin(0.5 * np.pi * phi)
-        # ) / (np.pi * phi)
-
-        # y = np.asarray(y, dtype=float)
-
-        # s = np.sin(0.5 * np.pi * phi)
-        # return 0.5 + np.arcsin((2 * temporal_phase - 1) * s) / (np.pi * phi)
-
-
-
-        # # Map temporal phase [0, 1] to absolute angle [φ, φ + 2π]
-        # angle = 2 * np.pi * temporal_phase + phi
-        
-        # # Convert scanner position (sin range [-1,1]) to pixel range [0,1]
-        # position = (np.sin(angle) + 1.0) / 2.0
-        
-        # return phase_corrected
-    
-    # def _build_harmonic_lut(self) -> np.ndarray:
-    #     """
-    #     Build lookup table for harmonic phase correction.
-    #     Maps temporal phase indices to corrected pixel phases.
-        
-    #     Returns:
-    #         Array of shape (pixels + 1,) with correction values
-    #     """
-    #     temporal_phases = np.linspace(0, 1, self.config.pixels + 1)
-    #     pixel_phases = self._harmonic_correction(temporal_phases)
-    #     return pixel_phases
     
     def _stretch_roi_mask(self, base_mask: np.ndarray) -> np.ndarray:
         if base_mask.shape != (self.config.lines, self.config.pixels):
@@ -575,47 +529,19 @@ class ImageReconstructor:
                         self.config.marker_delay * self.line_duration
                     )
 
-
         if self.config.bidirectional:
-            shift = int(
-                self.config.bidirectional_phase_shift * self.line_duration
-            )
+            # This will move the forward and backward image and squeeze or stretch the entire image based on marker_delay
             shift = int(
                 self.config.bidirectional_phase_shift * self.line_duration
             )
 
-            start += shift
-            stop += shift
-            start[~reversed_mask] -= marker_delay
-            stop[~reversed_mask] -= marker_delay
-            start[reversed_mask] += marker_delay
-            stop[reversed_mask] +=  marker_delay
-
+            start += shift - marker_delay
+            stop += shift + marker_delay
         else:
-            start += marker_delay
+            # This will squeeze or stretch image in x depending on the sign
+            start -= marker_delay 
             stop += marker_delay
    
-
-
-
-
-            # start[~reversed_mask] -= shift
-            # stop[~reversed_mask] -= shift
-            # start[reversed_mask] += shift
-            # stop[reversed_mask] +=  shift
-            # marker_delay = int(
-            #     self.config.marker_delay * self.line_duration
-            # )
-
-
-
-            # start -= shift 
-            # stop -= shift
-            # start -= marker_delay
-            # stop += marker_delay
-
-
-
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
         result["stop_nsync"] = stop
