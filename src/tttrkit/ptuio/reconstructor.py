@@ -37,8 +37,9 @@ class ScanConfig:
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
         harmonic_scan: bool = False,
-        harmonic_duty: float = 0.6,
-        marker_delay: float = 0,
+        laser_duty: float = 0.6, # used for harmonic correction
+        line_start_marker_delay: float = 0, # for shifting the edge of reconstructed image
+        line_stop_marker_delay: float = 0,
     ):
         self.lines = lines
         self.pixels = pixels
@@ -46,8 +47,9 @@ class ScanConfig:
         self.max_detector = max_detector
         self.bidirectional_phase_shift = bidirectional_phase_shift
         self.harmonic_scan = harmonic_scan
-        self.harmonic_duty = harmonic_duty
-        self.marker_delay = marker_delay
+        self.laser_duty = laser_duty
+        self.line_start_marker_delay = line_start_marker_delay
+        self.line_stop_marker_delay = line_stop_marker_delay
         
 
         # Normalize line_accumulations to tuple
@@ -91,7 +93,7 @@ class ScanConfig:
             "line_start_marker": self.line_start_marker_channel,
             "line_stop_marker": self.line_stop_marker_channel,
             "harmonic_scan": self.harmonic_scan,
-            "harmonic_duty": self.harmonic_duty,
+            "laser_duty": self.laser_duty,
         }
 
     # TODO modify for number of sequences
@@ -107,7 +109,7 @@ class ScanConfig:
             line_start_marker_channel=d.get("line_start_marker", 1),
             line_stop_marker_channel=d.get("line_stop_marker", 2),
             harmonic_scan=d.get("harmonic_scan", False),
-            harmonic_duty=d.get("harmonic_phase", 0.0),
+            laser_duty=d.get("laser_duty", 0.0),
         )
 
     def __repr__(self):
@@ -423,7 +425,7 @@ class ImageReconstructor:
         return list(self.requested_outputs)
 
     def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
-        harmonic_duty = self.config.harmonic_duty
+        harmonic_duty = self.config.laser_duty
         y = (
             np.cos(0.5 * np.pi * (1 - harmonic_duty))
             - np.cos(
@@ -525,9 +527,14 @@ class ImageReconstructor:
 
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
-        marker_delay = int(
-                        self.config.marker_delay * self.line_duration
+        line_start_marker_delay = int(
+                        self.config.line_start_marker_delay * self.line_duration
+                    ) # in nsync units
+
+        line_stop_marker_delay = int(
+                        self.config.line_stop_marker_delay * self.line_duration
                     )
+
 
         if self.config.bidirectional:
             # This will move the forward and backward image and squeeze or stretch the entire image based on marker_delay
@@ -535,12 +542,16 @@ class ImageReconstructor:
                 self.config.bidirectional_phase_shift * self.line_duration
             )
 
-            start += shift - marker_delay
-            stop += shift + marker_delay
+            start[~reversed_mask] += shift + line_start_marker_delay
+            stop[reversed_mask] += shift - line_start_marker_delay
+            stop[~reversed_mask] += shift + line_stop_marker_delay
+            start[reversed_mask] += shift - line_stop_marker_delay
+            
+
         else:
             # This will squeeze or stretch image in x depending on the sign
-            start -= marker_delay 
-            stop += marker_delay
+            start += line_start_marker_delay 
+            stop += line_stop_marker_delay
    
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
