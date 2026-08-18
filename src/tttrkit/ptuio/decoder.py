@@ -31,7 +31,7 @@ def get_markers(events: np.ndarray, marker_mask: int) -> np.ndarray:
     if not isinstance(marker_mask, (int, np.integer)) or marker_mask <= 0:
         raise ValueError("marker_mask must be a positive integer")
 
-    is_marker = (events["special"] != 0) & (events["channel"] < 63)
+    is_marker = (events["special"] != 0) & (events["channel"] < 8)
     contains_marker = (events["channel"] & marker_mask) != 0
     return events[is_marker & contains_marker]
 

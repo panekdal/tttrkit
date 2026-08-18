@@ -36,12 +36,20 @@ class ScanConfig:
         frame_start_marker_channel: int = 4,
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
+        harmonic_scan: bool = False,
+        laser_duty: float = 0.6, # used for harmonic correction
+        line_start_marker_delay: float = 0, # for shifting the edge of reconstructed image
+        line_stop_marker_delay: float = 0,
     ):
         self.lines = lines
         self.pixels = pixels
         self.frames = frames
         self.max_detector = max_detector
         self.bidirectional_phase_shift = bidirectional_phase_shift
+        self.harmonic_scan = harmonic_scan
+        self.laser_duty = laser_duty
+        self.line_start_marker_delay = line_start_marker_delay
+        self.line_stop_marker_delay = line_stop_marker_delay
         
 
         # Normalize line_accumulations to tuple
@@ -84,6 +92,8 @@ class ScanConfig:
             "frame_start_marker": self.frame_start_marker_channel,
             "line_start_marker": self.line_start_marker_channel,
             "line_stop_marker": self.line_stop_marker_channel,
+            "harmonic_scan": self.harmonic_scan,
+            "laser_duty": self.laser_duty,
         }
 
     # TODO modify for number of sequences
@@ -98,6 +108,8 @@ class ScanConfig:
             frame_start_marker_channel=d.get("frame_start_marker", 4),
             line_start_marker_channel=d.get("line_start_marker", 1),
             line_stop_marker_channel=d.get("line_stop_marker", 2),
+            harmonic_scan=d.get("harmonic_scan", False),
+            laser_duty=d.get("laser_duty", 0.0),
         )
 
     def __repr__(self):
@@ -195,6 +207,11 @@ class ImageReconstructor:
         self._roi_mask_stretched = None
         if roi_mask is not None:
             self._roi_mask_stretched = self._stretch_roi_mask(roi_mask)
+        
+        # Build harmonic correction lookup table
+        # self._harmonic_lut = None
+        # if self.config.harmonic_scan:
+        #     self._harmonic_lut = self._build_harmonic_lut()
 
     def update(self, events: np.ndarray):
         if self._finished:
@@ -407,6 +424,24 @@ class ImageReconstructor:
     def get_available_outputs(self):
         return list(self.requested_outputs)
 
+    def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
+        harmonic_duty = self.config.laser_duty
+        y = (
+            np.cos(0.5 * np.pi * (1 - harmonic_duty))
+            - np.cos(
+                np.pi * harmonic_duty * t
+                + 0.5 * np.pi * (1 - harmonic_duty)
+            )
+        ) / (np.pi * harmonic_duty)
+
+        I = (
+        2
+        * np.sin(0.5 * np.pi * harmonic_duty)
+        / (np.pi * harmonic_duty)
+        )
+        return y / I
+
+    
     def _stretch_roi_mask(self, base_mask: np.ndarray) -> np.ndarray:
         if base_mask.shape != (self.config.lines, self.config.pixels):
             raise ValueError(
@@ -492,13 +527,32 @@ class ImageReconstructor:
 
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
+        line_start_marker_delay = int(
+                        self.config.line_start_marker_delay * self.line_duration
+                    ) # in nsync units
+
+        line_stop_marker_delay = int(
+                        self.config.line_stop_marker_delay * self.line_duration
+                    )
+
+
         if self.config.bidirectional:
+            # This will move the forward and backward image and squeeze or stretch the entire image based on marker_delay
             shift = int(
                 self.config.bidirectional_phase_shift * self.line_duration
             )
-            start[reversed_mask] += shift
-            stop[reversed_mask] += shift
 
+            start[~reversed_mask] += shift + line_start_marker_delay
+            stop[reversed_mask] += shift - line_start_marker_delay
+            stop[~reversed_mask] += shift + line_stop_marker_delay
+            start[reversed_mask] += shift - line_stop_marker_delay
+            
+
+        else:
+            # This will squeeze or stretch image in x depending on the sign
+            start += line_start_marker_delay 
+            stop += line_stop_marker_delay
+   
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
         result["stop_nsync"] = stop
@@ -560,6 +614,10 @@ class ImageReconstructor:
             photons_in_segments["nsync"].astype(np.int64)
             - segment_starts[segment_index]
         ) / (segment_ends[segment_index] - segment_starts[segment_index])
+        
+        # Apply harmonic scan correction if enabled
+        if self.config.harmonic_scan:
+            phase = self._harmonic_correction(phase)
 
         pixels = np.floor(phase * self.config.pixels).astype(int)
 
@@ -689,6 +747,226 @@ class ImageReconstructor:
 
         self._stop_phase_computed = True
         return
+
+# TODO: add option to select marker channels and validation of marker chan
+
+class TraceReconstructor:
+    """Reconstruct time-resolved intensity traces from TTTR data.
+    
+    This class bins photon events into time bins and optionally extracts
+    marker times (frame start, line start, line stop) within the specified
+    time window.
+    """
+    def __init__(
+        self,
+        start_time: float = 0.0,
+        stop_time: float = 10.0,
+        max_detector: int = 64,
+        bin_width: float = 1e-3,
+        sync_rate: float = 40e6,
+        outputs: Sequence[str] | None = None,
+    ):
+        """
+        Initialize a trace reconstructor.
+
+        Parameters:
+            start_time_s (float): Start time in seconds. Default: 0.0
+            stop_time_s (float): Stop time in seconds. Default: 10.0
+            max_detector (int): Maximum detector index. Default: 64
+            bin_width_s (float): Time bin width in seconds. Default: 1e-3 (1 ms)
+            sync_rate (float): Sync rate in Hz. Default: 40e6 (40 MHz)
+            outputs (list of str, optional): List of outputs to compute.
+                - "photon_count": intensity trace per detector
+                - "markers": marker times (frame start, line start, line stop)
+                If None, both outputs are computed.
+        """
+
+        if sync_rate <= 0:
+            raise ValueError("sync_rate must be positive")
+        if bin_width <= 0:
+            raise ValueError("bin_width_s must be positive")
+        if start_time >= stop_time:
+            raise ValueError("start_time_s must be less than stop_time_s")
+
+        self.start_time = start_time
+        self.stop_time = stop_time
+        self.max_detector = max_detector
+        self.bin_width = bin_width
+        self.sync_rate = sync_rate
+
+        # Calculate number of bins
+        self.n_bins = int(np.ceil((stop_time - start_time) / bin_width))
+
+        # Convert time boundaries to nsync
+        self.start_nsync = int(start_time * sync_rate)
+        self.stop_nsync = int(stop_time * sync_rate)
+        self.bin_width_nsync = int(bin_width * sync_rate)
+
+        # Create time edges and bin centers
+        self.time_edges_nsync = (
+            np.arange(self.n_bins + 1, dtype=np.float64) * self.bin_width_nsync
+        ) + self.start_nsync
+        self.time_axis = (
+            (np.arange(self.n_bins, dtype=np.float64) + 0.5) * self.bin_width
+            + self.start_time
+        )
+
+        # Set outputs
+        if outputs is None:
+            outputs = ["photon_count", "markers"]
+
+        valid_outputs = ["photon_count", "markers"]
+        invalid = [o for o in outputs if o not in valid_outputs]
+        if invalid:
+            raise ValueError(
+                f"Invalid output(s): {invalid}. Must be in {valid_outputs}"
+            )
+
+        self.requested_outputs = set(outputs)
+
+        # Initialize arrays
+        if "photon_count" in self.requested_outputs:
+            self.intensity = np.zeros(
+                (self.n_bins, max_detector), dtype=np.uint64
+            )
+
+        if "markers" in self.requested_outputs:
+            self.marker_times = {
+                "frame_start": np.array([], dtype=np.uint64),
+                "line_start": np.array([], dtype=np.uint64),
+                "line_stop": np.array([], dtype=np.uint64),
+            }
+
+        self.active_detectors = set()
+
+    def update(self, events: np.ndarray):
+        """Process a chunk of events.
+        
+        Parameters:
+            events (ndarray): Array of events with dtype event_dtype
+        """
+
+        if events.dtype != event_dtype:
+            raise TypeError(
+                f"Expected events with dtype {event_dtype}, got {events.dtype}"
+            )
+
+        # Extract and bin photons by time
+        if "photon_count" in self.requested_outputs:
+            photons = get_photons(events)
+
+            # Find bin indices for each photon
+            bin_indices = (
+                np.searchsorted(
+                    self.time_edges_nsync, photons["nsync"], side="right"
+                )
+                - 1
+            )
+
+            # Validate bins and channels
+            valid = (
+                (bin_indices >= 0)
+                & (bin_indices < self.n_bins)
+                & (photons["channel"] < self.max_detector)
+            )
+
+            if np.count_nonzero(valid) > 0:
+                bin_indices_valid = bin_indices[valid]
+                channels_valid = photons["channel"][valid]
+                np.add.at(
+                    self.intensity,
+                    (bin_indices_valid, channels_valid),
+                    1,
+                )
+                self.active_detectors.update(np.unique(channels_valid))
+
+        # Extract markers within the time window
+        if "markers" in self.requested_outputs:
+            frame_markers = get_markers(events, 4)  # Frame start = mask 4
+            line_start_markers = get_markers(events, 1)  # Line start = mask 1
+            line_stop_markers = get_markers(events, 2)  # Line stop = mask 2
+
+            # Filter markers within time range
+            frame_valid = (
+                (frame_markers["nsync"] >= self.start_nsync)
+                & (frame_markers["nsync"] < self.stop_nsync)
+            )
+            line_start_valid = (
+                (line_start_markers["nsync"] >= self.start_nsync)
+                & (line_start_markers["nsync"] < self.stop_nsync)
+            )
+            line_stop_valid = (
+                (line_stop_markers["nsync"] >= self.start_nsync)
+                & (line_stop_markers["nsync"] < self.stop_nsync)
+            )
+
+            self.marker_times["frame_start"] = np.append(
+                self.marker_times["frame_start"],
+                frame_markers["nsync"][frame_valid],
+            )
+            self.marker_times["line_start"] = np.append(
+                self.marker_times["line_start"],
+                line_start_markers["nsync"][line_start_valid],
+            )
+            self.marker_times["line_stop"] = np.append(
+                self.marker_times["line_stop"],
+                line_stop_markers["nsync"][line_stop_valid],
+            )
+
+    def finalize(self) -> xr.Dataset:
+        """Finalize and return results as xarray Dataset.
+        
+        Returns:
+            xr.Dataset: Dataset containing:
+                - photon_count: intensity trace with dimensions (time, channel)
+                - frame_start_times: frame start marker times
+                - line_start_times: line start marker times
+                - line_stop_times: line stop marker times
+        """
+
+        data = {}
+        channels = max(self.active_detectors) + 1 if self.active_detectors else 1
+
+        if "photon_count" in self.requested_outputs:
+            # Trim intensity array to active channels
+            intensity = self.intensity[:, :channels]
+            data["photon_count"] = (("time", "channel"), intensity)
+
+        if "markers" in self.requested_outputs:
+            # Convert marker times from nsync to seconds
+            frame_start = (
+                self.marker_times["frame_start"] / self.sync_rate
+            )
+            line_start = (
+                self.marker_times["line_start"] / self.sync_rate
+            )
+            line_stop = (
+                self.marker_times["line_stop"] / self.sync_rate
+            )
+
+            # Always add marker fields, even if empty
+            data["frame_start_times"] = (("frame_marker",), frame_start)
+            data["line_start_times"] = (("line_start_marker",), line_start)
+            data["line_stop_times"] = (("line_stop_marker",), line_stop)
+
+        coords = {
+            "time": self.time_axis,
+            "channel": np.arange(channels),
+        }
+
+        if "markers" in self.requested_outputs:
+            # Always add marker coordinates, even if empty
+            coords["frame_marker"] = np.arange(
+                len(self.marker_times["frame_start"])
+            )
+            coords["line_start_marker"] = np.arange(
+                len(self.marker_times["line_start"])
+            )
+            coords["line_stop_marker"] = np.arange(
+                len(self.marker_times["line_stop"])
+            )
+
+        return xr.Dataset(data, coords=coords)
 
 
 
