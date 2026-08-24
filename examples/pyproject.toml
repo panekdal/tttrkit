@@ -12,6 +12,7 @@ dependencies = [
     "matplotlib>=3.11.1",
     "pyqt6>=6.11.0",
     "qtpy>=2.4.3",
+    "scikit-image>=0.26.0",
     "tttrkit",
 ]
 
