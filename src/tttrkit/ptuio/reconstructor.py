@@ -122,8 +122,10 @@ class ImageReconstructor:
         config: ScanConfig,
         roi_mask: np.ndarray | None = None,
         outputs: Sequence[str] | None = None,
-        omega: float = 0.012,
+        laser_sync_rate: float = 40e6,
         tcspc_channels: int = 2**15,
+        tcspc_bin_factor: int = 1,
+        tcspc_resolution: float = 5e-12,
     ):
         """
         Initialize an image reconstructor.
@@ -142,13 +144,41 @@ class ImageReconstructor:
                 - "tcspc_histogram"
                 If None, all outputs are computed.
 
-            omega (float): Angular frequency for phasor computation.
+            laser_sync_rate (float): Laser sync (repetition) rate in Hz,
+                used together with tcspc_resolution to compute the angular
+                frequency for phasor computation. Default: 40e6 (40 MHz).
 
             tcspc_channels (int): Number of time bins for TCSPC histogram.
+                Cannot exceed 2**15, since dtime has 15-bit resolution.
+
+            tcspc_bin_factor (int): Number of raw TCSPC channels to combine
+                into a single histogram bin (e.g. 4 combines every 4 channels
+                into 1), reducing resolution but also memory and noise for
+                over-resolved acquisitions. Only affects tcspc_histogram;
+                mean_arrival_time and phasor keep full raw dtime resolution.
+                If it does not evenly divide tcspc_channels, tcspc_channels
+                is rounded up to the nearest multiple. Default: 1 (no binning).
+
+            tcspc_resolution (float): Raw TCSPC resolution in seconds per
+                dtime channel (i.e. the file's MeasDesc_Resolution). Reported
+                as-is in the output; used with tcspc_bin_factor to derive the
+                binned tcspc_histogram_resolution. Default: 5e-12 (5 ps).
         """
 
         if not isinstance(config, ScanConfig):
             raise TypeError("ImageReconstructor requires a ScanConfig object")
+        if not isinstance(tcspc_bin_factor, (int, np.integer)) or tcspc_bin_factor < 1:
+            raise ValueError("tcspc_bin_factor must be a positive integer")
+        max_tcspc_channels = 2**15  # dtime has 15-bit resolution
+        if tcspc_channels > max_tcspc_channels:
+            raise ValueError(
+                f"tcspc_channels cannot exceed {max_tcspc_channels} "
+                "(dtime has 15-bit resolution)"
+            )
+        # Round up to the nearest multiple of tcspc_bin_factor
+        tcspc_channels = int(
+            np.ceil(tcspc_channels / tcspc_bin_factor) * tcspc_bin_factor
+        )
         self.config = config
         self.shape = (
             config.frames,
@@ -156,7 +186,6 @@ class ImageReconstructor:
             config.pixels,
             config.max_detector,
         )
-        self.omega = omega
         self.active_detectors = set()
 
         if outputs is None:
@@ -174,6 +203,11 @@ class ImageReconstructor:
 
         # Initialize output arrays
         self.tcspc_channels = tcspc_channels
+        self.tcspc_bin_factor = tcspc_bin_factor
+        self.tcspc_hist_channels = tcspc_channels // tcspc_bin_factor
+        self.tcspc_resolution = tcspc_resolution
+        self.tcspc_histogram_resolution = tcspc_resolution * tcspc_bin_factor
+        self.omega = 2 * np.pi * laser_sync_rate * self.tcspc_resolution
         if "arrival_sum" in self._required:
             self.arrival_sum = np.zeros(self.shape, dtype=np.float32)
         if "photon_count" in self._required:
@@ -182,7 +216,11 @@ class ImageReconstructor:
             self.phasor_sum = np.zeros(self.shape, dtype=np.complex64)
         if "tcspc_hist" in self._required:
             self.tcspc_hist = np.zeros(
-                (self.config.frames, self.config.max_detector, tcspc_channels),
+                (
+                    self.config.frames,
+                    self.config.max_detector,
+                    self.tcspc_hist_channels,
+                ),
                 dtype=np.uint64,
             )  # existing shape logic
 
@@ -264,6 +302,10 @@ class ImageReconstructor:
         data = {}
         active_detectors = sorted(self.active_detectors)
         channels = max(active_detectors) + 1
+
+        data["tcspc_resolution"] = ((), self.tcspc_resolution)
+        data["tcspc_histogram_resolution"] = ((), self.tcspc_histogram_resolution)
+        data["omega"] = ((), self.omega)
 
         if "tcspc_histogram" in self.requested_outputs:
             self.tcspc_hist = self.tcspc_hist[:, :channels, :]
@@ -387,7 +429,7 @@ class ImageReconstructor:
             "line": np.arange(self.config.lines),
             "pixel": np.arange(self.config.pixels),
             "channel": np.arange(channels),
-            "tcspc_channel": np.arange(self.tcspc_channels),
+            "tcspc_channel": np.arange(self.tcspc_hist_channels),
         }
 
         # Determine used dimensions
@@ -638,7 +680,6 @@ class ImageReconstructor:
         lines = lines[valid_pixels]
         channels = photons_in_segments["channel"][valid_pixels]
         dtimes = photons_in_segments["dtime"][valid_pixels]
-        phasors = np.exp(1j * self.omega * dtimes)
 
         if "arrival_sum" in self._required:
             np.add.at(
@@ -655,7 +696,13 @@ class ImageReconstructor:
             )
 
         if "tcspc_hist" in self._required:
-            np.add.at(self.tcspc_hist, (frames, channels, dtimes), 1)
+            # Only the histogram is binned; arrival time/phasor keep raw resolution
+            hist_dtimes = (
+                dtimes // self.tcspc_bin_factor
+                if self.tcspc_bin_factor > 1
+                else dtimes
+            )
+            np.add.at(self.tcspc_hist, (frames, channels, hist_dtimes), 1)
 
         pending_photons_mask = photons["nsync"] >= segment_ends[-1]
         self._pending_photons = photons[pending_photons_mask]
