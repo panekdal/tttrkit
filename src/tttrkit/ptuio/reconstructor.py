@@ -186,6 +186,10 @@ class ImageReconstructor:
             config.pixels,
             config.max_detector,
         )
+        # Maps a raw (pre-split) line index to its sequence index
+        self._sequence_pattern = np.repeat(
+            np.arange(len(config.line_accumulations)), config.line_accumulations
+        )
         self.active_detectors = set()
 
         if outputs is None:
@@ -205,8 +209,8 @@ class ImageReconstructor:
         self.tcspc_channels = tcspc_channels
         self.tcspc_bin_factor = tcspc_bin_factor
         self.tcspc_hist_channels = tcspc_channels // tcspc_bin_factor
-        self.tcspc_resolution = tcspc_resolution
-        self.tcspc_histogram_resolution = tcspc_resolution * tcspc_bin_factor
+        # self.tcspc_resolution = tcspc_resolution
+        self.tcspc_resolution = tcspc_resolution * tcspc_bin_factor
         self.omega = 2 * np.pi * laser_sync_rate * self.tcspc_resolution
         if "arrival_sum" in self._required:
             self.arrival_sum = np.zeros(self.shape, dtype=np.float32)
@@ -218,6 +222,7 @@ class ImageReconstructor:
             self.tcspc_hist = np.zeros(
                 (
                     self.config.frames,
+                    len(self.config.line_accumulations),
                     self.config.max_detector,
                     self.tcspc_hist_channels,
                 ),
@@ -232,9 +237,7 @@ class ImageReconstructor:
         self._current_frame_idx = 0  # current frame index
         self._pending_photons = np.empty((0,), dtype=event_dtype)
         self._frame_marker_nsyncs = np.empty((0,), dtype=np.uint64)
-        # self._start_marker_nsyncs = np.empty((0,), dtype=np.ndarray)
-        # self._stop_marker_nsyncs = np.empty((0,), dtype=np.ndarray)
-
+ 
         self._finished = False  # flag: stop processing when max frames reached
 
         self.stop_marker_phase = None
@@ -246,11 +249,7 @@ class ImageReconstructor:
         if roi_mask is not None:
             self._roi_mask_stretched = self._stretch_roi_mask(roi_mask)
         
-        # Build harmonic correction lookup table
-        # self._harmonic_lut = None
-        # if self.config.harmonic_scan:
-        #     self._harmonic_lut = self._build_harmonic_lut()
-
+ 
     def update(self, events: np.ndarray):
         if self._finished:
             return
@@ -304,13 +303,12 @@ class ImageReconstructor:
         channels = max(active_detectors) + 1
 
         data["tcspc_resolution"] = ((), self.tcspc_resolution)
-        data["tcspc_histogram_resolution"] = ((), self.tcspc_histogram_resolution)
         data["omega"] = ((), self.omega)
 
         if "tcspc_histogram" in self.requested_outputs:
-            self.tcspc_hist = self.tcspc_hist[:, :channels, :]
+            self.tcspc_hist = self.tcspc_hist[:, :, :channels, :]
             data["tcspc_histogram"] = (
-                ("frame", "channel", "tcspc_channel"),
+                ("frame", "sequence", "channel", "tcspc_time"),
                 self.tcspc_hist,
             )
 
@@ -429,7 +427,7 @@ class ImageReconstructor:
             "line": np.arange(self.config.lines),
             "pixel": np.arange(self.config.pixels),
             "channel": np.arange(channels),
-            "tcspc_channel": np.arange(self.tcspc_hist_channels),
+            "tcspc_time": np.arange(self.tcspc_hist_channels) * self.tcspc_resolution,
         }
 
         # Determine used dimensions
@@ -702,7 +700,14 @@ class ImageReconstructor:
                 if self.tcspc_bin_factor > 1
                 else dtimes
             )
-            np.add.at(self.tcspc_hist, (frames, channels, hist_dtimes), 1)
+            sequence = self._sequence_pattern[
+                lines % len(self._sequence_pattern)
+            ]
+            np.add.at(
+                self.tcspc_hist,
+                (frames, sequence, channels, hist_dtimes),
+                1,
+            )
 
         pending_photons_mask = photons["nsync"] >= segment_ends[-1]
         self._pending_photons = photons[pending_photons_mask]
