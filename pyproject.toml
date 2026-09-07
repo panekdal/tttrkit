@@ -2,7 +2,11 @@
 name = "tttrkit"
 dynamic = ["version"]
 description = "Streaming reader and decoder for PicoQuant TTTR files"
-authors = [{name = "Dalibor Panek"}]
+authors = [{ name = "Dalibor Panek" }]
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+
 dependencies = [
     "numpy",
     "xarray",
@@ -12,10 +16,6 @@ dependencies = [
 dev = [
     "pytest",
 ]
-
-license = "MIT"
-license-files = ["LICENSE"]
-readme = "README.md"
 
 [build-system]
 requires = ["setuptools", "setuptools_scm"]
