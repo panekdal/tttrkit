@@ -11,8 +11,8 @@ def make_markers(channels):
     return events
 
 
-def test_resolve_markers_allows_frame_coincidences_and_rejects_start_stop():
-    events = make_markers([5, 6, 7, 1, 2, 4, 63])
+def test_resolve_markers_allows_frame_coincidences_and_rejects_invalid_bits():
+    events = make_markers([5, 6, 7, 9, 1, 2, 4, 63])
 
     frame, starts, stops = resolve_markers(events, 4, 1, 2)
 

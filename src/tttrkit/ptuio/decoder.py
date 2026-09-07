@@ -46,7 +46,17 @@ def resolve_markers(
     ):
         raise ValueError("marker masks must be one of 1, 2, 4, or 8")
 
-    is_marker = (events["special"] != 0) & (events["channel"] < 16)
+    configured_bits = (
+        frame_marker_mask | line_start_marker_mask | line_stop_marker_mask
+    )
+    is_marker = (
+        (events["special"] != 0)
+        & (events["channel"] < 16)
+        & ((events["channel"] & configured_bits) == events["channel"])
+    )
+    # this discards markers that coincide with unconfigured
+    # marker channels as these usually are glitches
+
     marker_events = events[is_marker]
     channels = marker_events["channel"]
 
