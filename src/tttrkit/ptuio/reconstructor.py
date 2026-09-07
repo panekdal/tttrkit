@@ -22,6 +22,17 @@ AVAILABLE_OUTPUTS = [
 
 
 class ScanConfig:
+    """Configuration for image reconstruction.
+
+    ``line_start_marker_delay`` and ``line_stop_marker_delay`` are
+    dimensionless fractions of the inferred line duration. A positive start
+    delay begins accepting photons later, while a negative value begins
+    earlier. A positive stop delay accepts photons farther toward the next
+    line, while a negative value ends acceptance earlier. If the two delays
+    differ, the reconstructed line is effectively stretched or compressed in
+    phase.
+    """
+
     def __init__(
         self,
         lines: int = 512,
@@ -38,7 +49,7 @@ class ScanConfig:
         line_stop_marker_channel: int = 2,
         harmonic_scan: bool = False,
         laser_duty: float = 0.6, # used for harmonic correction
-        line_start_marker_delay: float = 0, # for shifting the edge of reconstructed image
+        line_start_marker_delay: float = 0,
         line_stop_marker_delay: float = 0,
     ):
         self.lines = lines
@@ -558,31 +569,8 @@ class ImageReconstructor:
 
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
-        line_start_marker_delay = int(
-                        self.config.line_start_marker_delay * self.line_duration
-                    ) # in nsync units
-
-        line_stop_marker_delay = int(
-                        self.config.line_stop_marker_delay * self.line_duration
-                    )
-
-
-        if self.config.bidirectional:
-            # This will move the forward and backward image and squeeze or stretch the entire image based on marker_delay
-            shift = int(
-                self.config.bidirectional_phase_shift * self.line_duration
-            )
-
-            start[~reversed_mask] += shift + line_start_marker_delay
-            stop[reversed_mask] += shift - line_start_marker_delay
-            stop[~reversed_mask] += shift + line_stop_marker_delay
-            start[reversed_mask] += shift - line_stop_marker_delay
-            
-
-        else:
-            # This will squeeze or stretch image in x depending on the sign
-            start += line_start_marker_delay 
-            stop += line_stop_marker_delay
+        # Delays shift the accepted photon window; unequal delays change its phase scale.
+        start, stop = self._adjust_line_bounds(start, stop, reversed_mask)
    
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
@@ -595,6 +583,38 @@ class ImageReconstructor:
             self._finished = True
 
         return result
+
+    def _adjust_line_bounds(
+        self,
+        start: np.ndarray,
+        stop: np.ndarray,
+        reversed_flags: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        start = np.asarray(start, dtype=np.int64).copy()
+        stop = np.asarray(stop, dtype=np.int64).copy()
+        reversed_flags = np.asarray(reversed_flags, dtype=bool)
+
+        line_start_delay = int(
+            self.config.line_start_marker_delay * self.line_duration
+        )
+        line_stop_delay = int(
+            self.config.line_stop_marker_delay * self.line_duration
+        )
+
+        if self.config.bidirectional:
+            shift = int(
+                self.config.bidirectional_phase_shift * self.line_duration
+            )
+            forward = ~reversed_flags
+            start[forward] += shift + line_start_delay
+            stop[reversed_flags] += shift - line_start_delay
+            stop[forward] += shift + line_stop_delay
+            start[reversed_flags] += shift - line_stop_delay
+        else:
+            start += line_start_delay
+            stop += line_stop_delay
+
+        return start, stop
 
     def _assign_photons_to_segments(
         self, photons: np.ndarray, segments: np.ndarray
@@ -713,16 +733,22 @@ class ImageReconstructor:
 
     def _flush_final_line(self):
 
-        final_segment = np.empty(1, dtype=segment_dtype)
-        final_segment["start_nsync"] = self._partial_start_nsync
-        final_segment["stop_nsync"] = (
-            self._partial_start_nsync + self.line_duration
+        final_start = np.array([self._partial_start_nsync], dtype=np.int64)
+        final_stop = final_start + self.line_duration
+        final_reversed = np.array(
+            [self.config.bidirectional and (self._current_line_idx % 2 == 1)],
+            dtype=bool,
         )
+        final_start, final_stop = self._adjust_line_bounds(
+            final_start, final_stop, final_reversed
+        )
+
+        final_segment = np.empty(1, dtype=segment_dtype)
+        final_segment["start_nsync"] = final_start
+        final_segment["stop_nsync"] = final_stop
         final_segment["frame_idx"] = self._current_frame_idx
         final_segment["line_idx"] = self._current_line_idx
-        final_segment["reversed"] = self.config.bidirectional and (
-            self._current_line_idx % 2 == 1
-        )
+        final_segment["reversed"] = final_reversed
 
         self._assign_photons_to_segments(self._pending_photons, final_segment)
         self._pending_photons = np.empty(
