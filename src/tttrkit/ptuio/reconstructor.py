@@ -3,7 +3,7 @@ import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
 
-from .decoder import event_dtype, get_markers, get_photons
+from .decoder import event_dtype, get_markers, get_photons, resolve_markers
 
 segment_dtype = [
     ("start_nsync", "i8"),
@@ -266,24 +266,15 @@ class ImageReconstructor:
 
         photons = get_photons(events)
 
-        # Extract frame markers
-        frame_markers = get_markers(
-            events, self.config.frame_start_marker_channel
-        )
-
-        # Extract line markers
-        start_markers = get_markers(
-            events, self.config.line_start_marker_channel
+        frame_markers, start_markers, stop_markers = resolve_markers(
+            events,
+            self.config.frame_start_marker_channel,
+            self.config.line_start_marker_channel,
+            self.config.line_stop_marker_channel,
         )
         if len(start_markers) == 0:
             # No line start markers → nothing to assemble this round
             return
-
-        stop_markers = (
-            get_markers(events, self.config.line_stop_marker_channel)
-            if self.config.line_stop_marker_channel
-            else None
-        )
 
         if not self._stop_phase_computed:
             self._compute_stop_phase(
@@ -934,9 +925,11 @@ class TraceReconstructor:
 
         # Extract markers within the time window
         if "markers" in self.requested_outputs:
-            frame_markers = get_markers(events, 4)  # Frame start = mask 4
-            line_start_markers = get_markers(events, 1)  # Line start = mask 1
-            line_stop_markers = get_markers(events, 2)  # Line stop = mask 2
+            (
+                frame_markers,
+                line_start_markers,
+                line_stop_markers,
+            ) = resolve_markers(events, 4, 1, 2)
 
             # Filter markers within time range
             frame_valid = (

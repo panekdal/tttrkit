@@ -21,17 +21,63 @@ event_dtype = np.dtype(
 def get_photons(events: np.ndarray):
     return events[(events["channel"] < 63) & (events["special"] == 0)]
 
+
+def resolve_markers(
+    events: np.ndarray,
+    frame_marker_mask: int,
+    line_start_marker_mask: int,
+    line_stop_marker_mask: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract compatible frame, line-start, and line-stop marker events.
+
+    Marker channels are bitmasks, so a single event may represent multiple
+    physical marker inputs. Frame/start and frame/stop coincidences are valid,
+    but one event cannot be both a line start and a line stop. Such events are
+    excluded from every returned role.
+    """
+    marker_masks = (
+        frame_marker_mask,
+        line_start_marker_mask,
+        line_stop_marker_mask,
+    )
+    if any(
+        not isinstance(mask, (int, np.integer)) or mask not in (1, 2, 4, 8)
+        for mask in marker_masks
+    ):
+        raise ValueError("marker masks must be one of 1, 2, 4, or 8")
+
+    is_marker = (events["special"] != 0) & (events["channel"] < 16)
+    marker_events = events[is_marker]
+    channels = marker_events["channel"]
+
+    has_frame = (channels & frame_marker_mask) != 0
+    has_line_start = (channels & line_start_marker_mask) != 0
+    has_line_stop = (channels & line_stop_marker_mask) != 0
+
+    compatible = ~(has_line_start & has_line_stop)
+
+    return (
+        marker_events[compatible & has_frame],
+        marker_events[compatible & has_line_start],
+        marker_events[compatible & has_line_stop],
+    )
+
+
 def get_markers(events: np.ndarray, marker_mask: int) -> np.ndarray:
     """Return marker events containing a configured physical marker input.
 
     ``marker_mask`` is the bit value of one marker input (1, 2, 4, or 8).
     A composite marker is retained whenever it contains that input; for
     example, mask ``4`` matches both marker value ``4`` and value ``6``.
+
+    This helper is intended for analysis. Reconstruction uses
+    :func:`resolve_markers` instead, because it validates marker roles across
+    the same event and rejects contradictory line-start/line-stop coincidences.
     """
     if not isinstance(marker_mask, (int, np.integer)) or marker_mask <= 0:
         raise ValueError("marker_mask must be a positive integer")
 
-    is_marker = (events["special"] != 0) & (events["channel"] < 8)
+    is_marker = (events["special"] != 0) & (events["channel"] < 63)
     contains_marker = (events["channel"] & marker_mask) != 0
     return events[is_marker & contains_marker]
 
