@@ -21,6 +21,77 @@ AVAILABLE_OUTPUTS = [
 ]
 
 
+def _adjust_line_bounds(
+    start: np.ndarray,
+    stop: np.ndarray,
+    reversed_flags: np.ndarray,
+    line_duration: int,
+    bidirectional: bool,
+    bidirectional_phase_shift: float,
+    line_start_marker_delay: float,
+    line_stop_marker_delay: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Shift line start/stop bounds by the configured delays and, for
+    bidirectional scans, the phase shift applied to backward lines.
+
+    Shared by :class:`ImageReconstructor` and :class:`SegmentReconstructor` so
+    the phase-shift math only needs fixing in one place.
+    """
+    start = np.asarray(start, dtype=np.int64).copy()
+    stop = np.asarray(stop, dtype=np.int64).copy()
+    reversed_flags = np.asarray(reversed_flags, dtype=bool)
+
+    line_start_delay = int(line_start_marker_delay * line_duration)
+    line_stop_delay = int(line_stop_marker_delay * line_duration)
+
+    if bidirectional:
+        shift = int(bidirectional_phase_shift * line_duration)
+        forward = ~reversed_flags
+        start[forward] += shift + line_start_delay
+        stop[reversed_flags] += shift - line_start_delay
+        stop[forward] += shift + line_stop_delay
+        start[reversed_flags] += shift - line_stop_delay
+    else:
+        start += line_start_delay
+        stop += line_stop_delay
+
+    return start, stop
+
+
+def _harmonic_correction(t: np.ndarray, laser_duty: float) -> np.ndarray:
+    y = (
+        np.cos(0.5 * np.pi * (1 - laser_duty))
+        - np.cos(np.pi * laser_duty * t + 0.5 * np.pi * (1 - laser_duty))
+    ) / (np.pi * laser_duty)
+
+    I = 2 * np.sin(0.5 * np.pi * laser_duty) / (np.pi * laser_duty)
+    return y / I
+
+
+def _phase_to_pixels(
+    nsync: np.ndarray,
+    segment_starts: np.ndarray,
+    segment_stops: np.ndarray,
+    pixels: int,
+    reversed_flags: np.ndarray,
+    harmonic_scan: bool = False,
+    laser_duty: float = 0.6,
+) -> np.ndarray:
+    """Convert photon nsync values within their line segment to a pixel index,
+    flipping backward (reversed) lines.
+
+    Shared by :class:`ImageReconstructor` and :class:`SegmentReconstructor`.
+    """
+    phase = (nsync.astype(np.int64) - segment_starts) / (
+        segment_stops - segment_starts
+    )
+    if harmonic_scan:
+        phase = _harmonic_correction(phase, laser_duty)
+    pixel_idx = np.floor(phase * pixels).astype(int)
+    return np.where(reversed_flags, pixels - 1 - pixel_idx, pixel_idx)
+
+
+
 class ScanConfig:
     """Configuration for image reconstruction.
 
@@ -466,24 +537,6 @@ class ImageReconstructor:
     def get_available_outputs(self):
         return list(self.requested_outputs)
 
-    def _harmonic_correction(self, t: np.ndarray) -> np.ndarray:
-        harmonic_duty = self.config.laser_duty
-        y = (
-            np.cos(0.5 * np.pi * (1 - harmonic_duty))
-            - np.cos(
-                np.pi * harmonic_duty * t
-                + 0.5 * np.pi * (1 - harmonic_duty)
-            )
-        ) / (np.pi * harmonic_duty)
-
-        I = (
-        2
-        * np.sin(0.5 * np.pi * harmonic_duty)
-        / (np.pi * harmonic_duty)
-        )
-        return y / I
-
-    
     def _stretch_roi_mask(self, base_mask: np.ndarray) -> np.ndarray:
         if base_mask.shape != (self.config.lines, self.config.pixels):
             raise ValueError(
@@ -590,31 +643,16 @@ class ImageReconstructor:
         stop: np.ndarray,
         reversed_flags: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        start = np.asarray(start, dtype=np.int64).copy()
-        stop = np.asarray(stop, dtype=np.int64).copy()
-        reversed_flags = np.asarray(reversed_flags, dtype=bool)
-
-        line_start_delay = int(
-            self.config.line_start_marker_delay * self.line_duration
+        return _adjust_line_bounds(
+            start,
+            stop,
+            reversed_flags,
+            self.line_duration,
+            self.config.bidirectional,
+            self.config.bidirectional_phase_shift,
+            self.config.line_start_marker_delay,
+            self.config.line_stop_marker_delay,
         )
-        line_stop_delay = int(
-            self.config.line_stop_marker_delay * self.line_duration
-        )
-
-        if self.config.bidirectional:
-            shift = int(
-                self.config.bidirectional_phase_shift * self.line_duration
-            )
-            forward = ~reversed_flags
-            start[forward] += shift + line_start_delay
-            stop[reversed_flags] += shift - line_start_delay
-            stop[forward] += shift + line_stop_delay
-            start[reversed_flags] += shift - line_stop_delay
-        else:
-            start += line_start_delay
-            stop += line_stop_delay
-
-        return start, stop
 
     def _assign_photons_to_segments(
         self, photons: np.ndarray, segments: np.ndarray
@@ -661,19 +699,14 @@ class ImageReconstructor:
         lines = segments["line_idx"][segment_index]
         reversed_flags = segments["reversed"][segment_index]
 
-        phase = (
-            photons_in_segments["nsync"].astype(np.int64)
-            - segment_starts[segment_index]
-        ) / (segment_ends[segment_index] - segment_starts[segment_index])
-        
-        # Apply harmonic scan correction if enabled
-        if self.config.harmonic_scan:
-            phase = self._harmonic_correction(phase)
-
-        pixels = np.floor(phase * self.config.pixels).astype(int)
-
-        pixels = np.where(
-            reversed_flags, self.config.pixels - 1 - pixels, pixels
+        pixels = _phase_to_pixels(
+            photons_in_segments["nsync"],
+            segment_starts[segment_index],
+            segment_ends[segment_index],
+            self.config.pixels,
+            reversed_flags,
+            harmonic_scan=self.config.harmonic_scan,
+            laser_duty=self.config.laser_duty,
         )
 
         valid_pixels = (pixels >= 0) & (pixels < self.config.pixels)
@@ -818,6 +851,182 @@ class ImageReconstructor:
         return
 
 # TODO: add option to select marker channels and validation of marker chan
+
+
+class SegmentReconstructor:
+    """Reconstruct a single chunk of events into a (line, pixel) image, using
+    only the complete lines bounded by line-start markers found within that
+    chunk.
+
+    Unlike :class:`ImageReconstructor`, this is a lightweight, single-shot,
+    stateless reconstructor: it does not track frames, does not resolve
+    channels (all detectors are summed together), and only ever uses the
+    first scan sequence. It is intended for quickly probing a small window of
+    data, e.g. for bidirectional phase-shift estimation, where reconstructing
+    a full multi-frame, per-channel image would be unnecessary overhead.
+
+    The output has as many lines as there are complete line-start-to-line-start
+    intervals in the chunk (i.e. ``len(line_start_markers) - 1``), not the
+    nominal number of lines in a full frame.
+    """
+
+    def __init__(self, config: ScanConfig):
+        if not isinstance(config, ScanConfig):
+            raise TypeError("SegmentReconstructor requires a ScanConfig object")
+        self.config = config
+        self.stop_marker_phase = None
+        self.line_duration = 0
+
+    def reconstruct(self, events: np.ndarray) -> xr.Dataset:
+        """Process one chunk of events and return the reconstructed image.
+
+        Args:
+            events: Array of events with dtype ``event_dtype``.
+
+        Returns:
+            xr.Dataset with a single ``photon_count`` variable of dims
+            ``("line", "pixel")``.
+        """
+        if events.dtype != event_dtype:
+            raise TypeError(
+                f"Expected events with dtype {event_dtype}, got {events.dtype}"
+            )
+
+        photons = get_photons(events)
+        _, start_markers, stop_markers = resolve_markers(
+            events,
+            self.config.frame_start_marker_channel,
+            self.config.line_start_marker_channel,
+            self.config.line_stop_marker_channel,
+        )
+
+        if len(start_markers) < 2:
+            # Not enough line-start markers to bound a single complete line
+            return self._empty_dataset()
+
+        self._compute_stop_phase(start_markers["nsync"], stop_markers["nsync"])
+        if self.line_duration <= 0:
+            return self._empty_dataset()
+
+        start, stop, line_idx, reversed_mask = self._build_segments(
+            start_markers["nsync"]
+        )
+        photon_count = np.zeros(
+            (len(start), self.config.pixels), dtype=np.uint32
+        )
+        self._assign_photons(photons, start, stop, line_idx, reversed_mask, photon_count)
+
+        return xr.Dataset(
+            {"photon_count": (("line", "pixel"), photon_count)},
+            coords={
+                "line": np.arange(len(start)),
+                "pixel": np.arange(self.config.pixels),
+            },
+        )
+
+    def _empty_dataset(self) -> xr.Dataset:
+        return xr.Dataset(
+            {
+                "photon_count": (
+                    ("line", "pixel"),
+                    np.zeros((0, self.config.pixels), dtype=np.uint32),
+                )
+            },
+            coords={"line": np.arange(0), "pixel": np.arange(self.config.pixels)},
+        )
+
+    def _compute_stop_phase(
+        self,
+        start_nsyncs: NDArray[np.uint64],
+        stop_nsyncs: NDArray[np.uint64],
+        default_phase: float = 0.80,
+    ) -> None:
+        start_nsyncs = start_nsyncs.astype(np.int64, copy=False)
+        stop_nsyncs = stop_nsyncs.astype(np.int64, copy=False)
+
+        if len(stop_nsyncs) == 0:
+            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
+            self.stop_marker_phase = default_phase
+            self.line_duration = int(np.median(intervals) * default_phase)
+            return
+
+        # Use only the first start/stop pair, as requested
+        start0, stop0 = start_nsyncs[0], stop_nsyncs[0]
+        interval0 = start_nsyncs[1] - start_nsyncs[0]
+        duration0 = stop0 - start0
+
+        if duration0 <= 0 or not (0 < duration0 / interval0 < 1):
+            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
+            self.stop_marker_phase = default_phase
+            self.line_duration = int(np.median(intervals) * default_phase)
+            return
+
+        self.stop_marker_phase = float(duration0 / interval0)
+        self.line_duration = int(duration0)
+
+    def _build_segments(
+        self, start_nsyncs: NDArray[np.uint64]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        start = start_nsyncs[:-1].astype(np.int64)
+        stop = start + self.line_duration
+        line_idx = np.arange(len(start))
+        reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
+
+        start, stop = _adjust_line_bounds(
+            start,
+            stop,
+            reversed_mask,
+            self.line_duration,
+            self.config.bidirectional,
+            self.config.bidirectional_phase_shift,
+            self.config.line_start_marker_delay,
+            self.config.line_stop_marker_delay,
+        )
+
+        return start, stop, line_idx, reversed_mask
+
+    def _assign_photons(
+        self,
+        photons: np.ndarray,
+        start: np.ndarray,
+        stop: np.ndarray,
+        line_idx: np.ndarray,
+        reversed_mask: np.ndarray,
+        photon_count: np.ndarray,
+    ) -> None:
+        if len(start) == 0 or photons.size == 0:
+            return
+
+        segment_index = np.searchsorted(start, photons["nsync"], side="right") - 1
+
+        valid = (
+            (segment_index >= 0)
+            & (segment_index < len(start))
+            & (photons["nsync"] < stop[segment_index])
+        )
+        if np.count_nonzero(valid) == 0:
+            return
+
+        segment_index = segment_index[valid]
+        photons_in_segments = photons[valid]
+
+        lines = line_idx[segment_index]
+        reversed_flags = reversed_mask[segment_index]
+
+        pixels = _phase_to_pixels(
+            photons_in_segments["nsync"],
+            start[segment_index],
+            stop[segment_index],
+            self.config.pixels,
+            reversed_flags,
+        )
+
+        valid_pixels = (pixels >= 0) & (pixels < self.config.pixels)
+        if np.count_nonzero(valid_pixels) == 0:
+            return
+
+        np.add.at(photon_count, (lines[valid_pixels], pixels[valid_pixels]), 1)
+
 
 class TraceReconstructor:
     """Reconstruct time-resolved intensity traces from TTTR data.
