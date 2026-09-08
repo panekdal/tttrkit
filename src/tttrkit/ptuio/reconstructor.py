@@ -868,6 +868,11 @@ class SegmentReconstructor:
     The output has as many lines as there are complete line-start-to-line-start
     intervals in the chunk (i.e. ``len(line_start_markers) - 1``), not the
     nominal number of lines in a full frame.
+
+    Since frames aren't tracked, a frame-start marker within the chunk means
+    the lines before and after it belong to different frames (a discontinuity).
+    Such breaks are reported via the ``frame_break_line`` output variable: line
+    index after which a frame-start marker was detected.
     """
 
     def __init__(self, config: ScanConfig):
@@ -884,8 +889,10 @@ class SegmentReconstructor:
             events: Array of events with dtype ``event_dtype``.
 
         Returns:
-            xr.Dataset with a single ``photon_count`` variable of dims
-            ``("line", "pixel")``.
+            xr.Dataset with a ``photon_count`` variable of dims
+            ``("line", "pixel")`` and a ``frame_break_line`` variable listing
+            the line index after which each frame-start marker found in the
+            chunk occurred (empty if the chunk doesn't span a frame boundary).
         """
         if events.dtype != event_dtype:
             raise TypeError(
@@ -893,7 +900,7 @@ class SegmentReconstructor:
             )
 
         photons = get_photons(events)
-        _, start_markers, stop_markers = resolve_markers(
+        frame_markers, start_markers, stop_markers = resolve_markers(
             events,
             self.config.frame_start_marker_channel,
             self.config.line_start_marker_channel,
@@ -915,14 +922,33 @@ class SegmentReconstructor:
             (len(start), self.config.pixels), dtype=np.uint32
         )
         self._assign_photons(photons, start, stop, line_idx, reversed_mask, photon_count)
+        frame_break_lines = self._find_frame_breaks(
+            frame_markers["nsync"], start_markers["nsync"]
+        )
 
         return xr.Dataset(
-            {"photon_count": (("line", "pixel"), photon_count)},
+            {
+                "photon_count": (("line", "pixel"), photon_count),
+                "frame_break_line": (("frame_break",), frame_break_lines),
+            },
             coords={
                 "line": np.arange(len(start)),
                 "pixel": np.arange(self.config.pixels),
+                "frame_break": np.arange(len(frame_break_lines)),
             },
         )
+
+    def _find_frame_breaks(
+        self, frame_nsyncs: NDArray[np.uint64], start_nsyncs: NDArray[np.uint64]
+    ) -> np.ndarray:
+        """For each frame-start marker, find the index of the line right
+        before it (i.e. the last line of the previous frame)."""
+        if len(frame_nsyncs) == 0:
+            return np.empty(0, dtype=np.int64)
+
+        used_starts = start_nsyncs[:-1].astype(np.int64)
+        idx = np.searchsorted(used_starts, frame_nsyncs.astype(np.int64), side="right") - 1
+        return np.clip(idx, 0, len(used_starts) - 1)
 
     def _empty_dataset(self) -> xr.Dataset:
         return xr.Dataset(
@@ -930,9 +956,14 @@ class SegmentReconstructor:
                 "photon_count": (
                     ("line", "pixel"),
                     np.zeros((0, self.config.pixels), dtype=np.uint32),
-                )
+                ),
+                "frame_break_line": (("frame_break",), np.empty(0, dtype=np.int64)),
             },
-            coords={"line": np.arange(0), "pixel": np.arange(self.config.pixels)},
+            coords={
+                "line": np.arange(0),
+                "pixel": np.arange(self.config.pixels),
+                "frame_break": np.arange(0),
+            },
         )
 
     def _compute_stop_phase(
