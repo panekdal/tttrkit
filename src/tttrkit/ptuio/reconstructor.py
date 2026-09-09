@@ -44,16 +44,13 @@ def _adjust_line_bounds(
     line_start_delay = int(line_start_marker_delay * line_duration)
     line_stop_delay = int(line_stop_marker_delay * line_duration)
 
+    start += line_start_delay
+    stop += line_stop_delay
+
     if bidirectional:
         shift = int(bidirectional_phase_shift * line_duration)
-        forward = ~reversed_flags
-        start[forward] += line_start_delay
-        stop[reversed_flags] += shift + line_stop_delay
-        stop[forward] += line_stop_delay
-        start[reversed_flags] += shift + line_start_delay
-    else:
-        start += line_start_delay
-        stop += line_stop_delay
+        start[reversed_flags] += shift
+        stop[reversed_flags] += shift
 
     return start, stop
 
