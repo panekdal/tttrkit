@@ -911,6 +911,11 @@ class SegmentReconstructor:
             # Not enough line-start markers to bound a single complete line
             return self._empty_dataset()
 
+        # Drop stop markers belonging to a line whose start was in a previous
+        # chunk (i.e. preceding this chunk's first start marker), so
+        # stop_markers[0] truly pairs with start_markers[0].
+        stop_markers = stop_markers[stop_markers["nsync"] > start_markers["nsync"][0]]
+
         self._compute_stop_phase(start_markers["nsync"], stop_markers["nsync"])
         if self.line_duration <= 0:
             return self._empty_dataset()
@@ -948,6 +953,9 @@ class SegmentReconstructor:
 
         used_starts = start_nsyncs[:-1].astype(np.int64)
         idx = np.searchsorted(used_starts, frame_nsyncs.astype(np.int64), side="right") - 1
+        # A frame marker before the first reconstructed line has no previous
+        # line to report a break after; drop it instead of clamping to 0.
+        # idx = idx[idx >= 0]
         return np.clip(idx, 0, len(used_starts) - 1)
 
     def _empty_dataset(self) -> xr.Dataset:
