@@ -183,6 +183,7 @@ def estimate_bidirectional_prealign(
     pixel_shift = int(lags[np.argmax(cross_corr)])
 
     phase_shift_guess = pixel_shift / (2 * config.pixels)
+    backward_aligned = np.roll(backward,pixel_shift)
 
     if verbose:
         print(f"Coarse forward/backward pixel offset: {pixel_shift}")
@@ -192,6 +193,7 @@ def estimate_bidirectional_prealign(
         {
             "forward": (("pixel",), forward),
             "backward": (("pixel",), backward),
+            "backward_aligned":(("pixel",), backward_aligned),
             "pixel_shift": ((), pixel_shift),
             "phase_shift": ((), phase_shift_guess),
         },
