@@ -26,8 +26,8 @@ def _adjust_line_bounds(
     stop: np.ndarray,
     reversed_flags: np.ndarray,
     line_duration: int,
-    bidirectional: bool,
-    bidirectional_phase_shift: float,
+    # bidirectional: bool,
+    # bidirectional_phase_shift: float,
     line_start_marker_delay: float,
     line_stop_marker_delay: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -47,10 +47,10 @@ def _adjust_line_bounds(
     start += line_start_delay
     stop += line_stop_delay
 
-    if bidirectional:
-        shift = int(bidirectional_phase_shift * line_duration)
-        start[reversed_flags] += shift
-        stop[reversed_flags] += shift
+    # if bidirectional:
+    #     shift = int(bidirectional_phase_shift * line_duration)
+    #     start[reversed_flags] += shift
+    #     stop[reversed_flags] += shift
 
     return start, stop
 

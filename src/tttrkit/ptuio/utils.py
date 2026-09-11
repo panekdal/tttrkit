@@ -103,59 +103,61 @@ def _read_probe_chunk(
 
 def estimate_bidirectional_prealign(
     reader: TTTRReader,
-    config: ScanConfig,
+    cfg: ScanConfig,
     wrap: int = 1024,
     chunk_length: int = 500_000,
     skip_chunks: int = 0,
-    verbose: bool = True,
-) -> xr.Dataset:
-    """
-    Quickly estimate a coarse starting guess for ``bidirectional_phase_shift``,
-    for use as the initial value before refining with
-    :func:`estimate_bidirectional_shift`, which only converges when already
-    close to the true shift.
-
-    Reconstructs a single chunk with :class:`SegmentReconstructor` (fast,
-    channel- and frame-agnostic) at zero phase shift, sums the forward and
-    backward lines into two 1D pixel profiles, and finds the offset between
-    them via FFT-based cross-correlation (phase correlation). Since a
-    ``bidirectional_phase_shift`` of ``dphi`` moves the forward image by
-    ``-dphi * pixels`` and the backward image by ``+dphi * pixels`` (in
-    opposite directions, because backward pixels are mirrored), a measured
-    forward/backward offset of ``lag`` pixels (lag = backward shifted right by
-    this much matches forward) is cancelled by ``dphi = -lag / (2 * pixels)``.
-
-    Args:
-        reader: TTTRReader instance
-        config: A ScanConfig instance.
-        chunk_length: Number of events to read for the probe chunk.
-        skip_chunks: Number of leading chunks of chunk_length events to skip first.
-        verbose: Whether to print progress.
-
-    Returns:
-        xr.Dataset with:
-            - ``forward``, ``backward``: 1D pixel profiles (dim ``pixel``) used
-              for the cross-correlation, for inspection/plotting.
-            - ``pixel_shift``: coarse forward/backward offset in pixels.
-            - ``phase_shift``: coarse ``bidirectional_phase_shift`` guess
-              (fraction of line duration). The sign should be verified with the
-              follow-up fine search (flip it if that search's scores worsen
-              instead of converge).
-    """
-    if not config.bidirectional:
-        raise ValueError(
-            "ScanConfig must have bidirectional=True to estimate phase shift."
-        )
-
-    probe_config = copy.deepcopy(config)
+    verbose = True,
+):
+    probe_config = copy.deepcopy(cfg)
     probe_config.bidirectional_phase_shift = 0.0
 
     corrected_chunk, parity = _read_probe_chunk(
-        reader, config, wrap, chunk_length, skip_chunks, verbose
+        reader, cfg, wrap, chunk_length, skip_chunks, verbose
+    )
+
+    _, start_markers, stop_markers = resolve_markers(
+    corrected_chunk,
+    4,
+    1,
+    2,
+    )    
+
+    start_marker_nsync = start_markers['nsync']
+    stop_marker_nsync = stop_markers['nsync']
+    stop_marker_nsync = stop_marker_nsync[stop_marker_nsync > start_marker_nsync[0]]
+
+    n_pairs = min(len(start_marker_nsync),len(stop_marker_nsync))
+    start_marker_nsync = start_marker_nsync[:n_pairs]
+    stop_marker_nsync = stop_marker_nsync[:n_pairs]
+
+    periods = np.diff(start_marker_nsync)
+    durations = stop_marker_nsync - start_marker_nsync
+    pauses = start_marker_nsync[1:] - stop_marker_nsync[:-1]
+    print(f"{np.mean(durations)} +/- {np.std(durations)}")
+    print(f"{np.mean(pauses)} +/- {np.std(pauses)}")
+    print(f"Duty: {np.mean(durations[:-1] / periods)}")
+
+
+    pause_phase = np.mean(pauses) / np.mean(durations) 
+    pause_phase += cfg.line_start_marker_delay 
+    pause_phase -= cfg.line_stop_marker_delay
+    
+    margin = 0.9*pause_phase /2
+    probe_config.line_start_marker_delay += -margin
+    probe_config.line_stop_marker_delay += margin
+
+    probe_chunk, parity = _read_probe_chunk(
+        reader=reader,
+        config=probe_config,
+        wrap=wrap,
+        chunk_length=chunk_length,
+        skip_chunks=skip_chunks,
+        verbose=verbose
     )
 
     seg_recon = SegmentReconstructor(probe_config)
-    ds = seg_recon.reconstruct(corrected_chunk)
+    ds = seg_recon.reconstruct(probe_chunk)
 
     n_lines = ds.sizes["line"]
     # Forward/backward alignment is determined purely by the parity carried
@@ -181,13 +183,15 @@ def estimate_bidirectional_prealign(
     )
     lags = np.arange(-len(forward) + 1, len(forward))
     pixel_shift = int(lags[np.argmax(cross_corr)])
+    phase_shift = pixel_shift * 512 / (np.mean(durations) + 0.9 * np.mean(pauses)) / 2
+    phase_shift /= (1-cfg.line_start_marker_delay)
+    phase_shift /=(1+cfg.line_start_marker_delay)
 
-    phase_shift_guess = pixel_shift / (2 * config.pixels)
     backward_aligned = np.roll(backward,pixel_shift)
 
     if verbose:
         print(f"Coarse forward/backward pixel offset: {pixel_shift}")
-        print(f"Coarse bidirectional_phase_shift guess: {phase_shift_guess:.5f}")
+        print(f"Coarse bidirectional phase shift: {phase_shift:.5f}")
 
     return xr.Dataset(
         {
@@ -195,10 +199,11 @@ def estimate_bidirectional_prealign(
             "backward": (("pixel",), backward),
             "backward_aligned":(("pixel",), backward_aligned),
             "pixel_shift": ((), pixel_shift),
-            "phase_shift": ((), phase_shift_guess),
+            "phase_shift": ((), phase_shift),
         },
-        coords={"pixel": np.arange(config.pixels)},
+        coords={"pixel": np.arange(probe_config.pixels)},
     )
+
 
 
 def estimate_bidirectional_shift(
