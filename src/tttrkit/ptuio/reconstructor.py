@@ -645,8 +645,6 @@ class ImageReconstructor:
             stop,
             reversed_flags,
             self.line_duration,
-            self.config.bidirectional,
-            self.config.bidirectional_phase_shift,
             self.config.line_start_marker_delay,
             self.config.line_stop_marker_delay,
         )
@@ -1013,8 +1011,8 @@ class SegmentReconstructor:
             stop,
             reversed_mask,
             self.line_duration,
-            self.config.bidirectional,
-            self.config.bidirectional_phase_shift,
+            # self.config.bidirectional,
+            # self.config.bidirectional_phase_shift,
             self.config.line_start_marker_delay,
             self.config.line_stop_marker_delay,
         )

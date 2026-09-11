@@ -243,8 +243,8 @@ def estimate_bidirectional_shift(
         print("Estimating bidirectional phase shift...")
 
     shifts = np.linspace(
-        config.bidirectional_phase_shift - max_shift,
-        config.bidirectional_phase_shift + max_shift,
+        - max_shift,
+        + max_shift,
         steps,
     )
     scores = np.zeros_like(shifts)
@@ -260,7 +260,8 @@ def estimate_bidirectional_shift(
 
         # Clone config and apply shift
         test_config = copy.deepcopy(config)
-        test_config.bidirectional_phase_shift = shift
+        test_config.line_start_marker_delay += shift
+        test_config.line_stop_marker_delay += shift
         seg_recon = SegmentReconstructor(test_config)
         ds = seg_recon.reconstruct(corrected_chunk)
 
