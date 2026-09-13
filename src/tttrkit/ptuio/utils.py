@@ -108,19 +108,20 @@ def estimate_bidirectional_prealign(
     chunk_length: int = 500_000,
     skip_chunks: int = 0,
     verbose = True,
+    margin_fraction: float = .9, # must be between 0 and 1 
 ):
     probe_config = copy.deepcopy(cfg)
-    probe_config.bidirectional_phase_shift = 0.0
+    # probe_config.bidirectional_phase_shift = 0.0
 
     corrected_chunk, parity = _read_probe_chunk(
         reader, cfg, wrap, chunk_length, skip_chunks, verbose
     )
 
     _, start_markers, stop_markers = resolve_markers(
-    corrected_chunk,
-    4,
-    1,
-    2,
+        corrected_chunk,
+        4,
+        1,
+        2,
     )    
 
     start_marker_nsync = start_markers['nsync']
@@ -128,32 +129,39 @@ def estimate_bidirectional_prealign(
     stop_marker_nsync = stop_marker_nsync[stop_marker_nsync > start_marker_nsync[0]]
 
     n_pairs = min(len(start_marker_nsync),len(stop_marker_nsync))
+    if verbose:
+        print(f"{n_pairs} marker paris found in the chunk")
     start_marker_nsync = start_marker_nsync[:n_pairs]
     stop_marker_nsync = stop_marker_nsync[:n_pairs]
 
     periods = np.diff(start_marker_nsync)
     durations = stop_marker_nsync - start_marker_nsync
     pauses = start_marker_nsync[1:] - stop_marker_nsync[:-1]
-    print(f"{np.mean(durations)} +/- {np.std(durations)}")
-    print(f"{np.mean(pauses)} +/- {np.std(pauses)}")
-    print(f"Duty: {np.mean(durations[:-1] / periods)}")
+    duty = np.median(durations) / np.median(periods)
+    if verbose:
+        print(f"Durations [nsync]: {np.median(durations)} +/- {np.std(durations)}")
+        print(f"Puases [nsync]: {np.median(pauses)} +/- {np.std(pauses)}")
+        print(f"Duty: {duty}")
+
+    # increase proportionally the number of pixels
+    probe_config.pixels = int(np.ceil(cfg.lines / duty))
 
 
-    pause_phase = np.mean(pauses) / np.mean(durations) 
+    pause_phase = np.median(pauses) / np.median(durations) 
     pause_phase += cfg.line_start_marker_delay 
     pause_phase -= cfg.line_stop_marker_delay
     
-    margin = 0.9*pause_phase /2
+    margin = margin_fraction*pause_phase /2
     probe_config.line_start_marker_delay += -margin
     probe_config.line_stop_marker_delay += margin
 
     probe_chunk, parity = _read_probe_chunk(
-        reader=reader,
-        config=probe_config,
-        wrap=wrap,
-        chunk_length=chunk_length,
-        skip_chunks=skip_chunks,
-        verbose=verbose
+        reader,
+        probe_config,
+        wrap,
+        chunk_length,
+        skip_chunks,
+        verbose
     )
 
     seg_recon = SegmentReconstructor(probe_config)
@@ -183,7 +191,8 @@ def estimate_bidirectional_prealign(
     )
     lags = np.arange(-len(forward) + 1, len(forward))
     pixel_shift = int(lags[np.argmax(cross_corr)])
-    phase_shift = pixel_shift * 512 / (np.mean(durations) + 0.9 * np.mean(pauses)) / 2
+    phase_shift = pixel_shift * probe_config.pixels / (np.median(durations) + margin_fraction * np.median(pauses)) / 2
+
     phase_shift /= (1-cfg.line_start_marker_delay)
     phase_shift /=(1+cfg.line_start_marker_delay)
 
@@ -198,10 +207,14 @@ def estimate_bidirectional_prealign(
             "forward": (("pixel",), forward),
             "backward": (("pixel",), backward),
             "backward_aligned":(("pixel",), backward_aligned),
+            "durations_nsync": (("marker_pair"), durations),
             "pixel_shift": ((), pixel_shift),
             "phase_shift": ((), phase_shift),
+            "period_nsync": ((), np.median(periods))
         },
-        coords={"pixel": np.arange(probe_config.pixels)},
+        coords={"pixel": np.arange(probe_config.pixels),
+                "marker_pair": np.arange(n_pairs-parity), 
+                },
     )
 
 

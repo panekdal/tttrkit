@@ -21,38 +21,38 @@ AVAILABLE_OUTPUTS = [
 ]
 
 
-def _adjust_line_bounds(
-    start: np.ndarray,
-    stop: np.ndarray,
-    reversed_flags: np.ndarray,
-    line_duration: int,
-    # bidirectional: bool,
-    # bidirectional_phase_shift: float,
-    line_start_marker_delay: float,
-    line_stop_marker_delay: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Shift line start/stop bounds by the configured delays and, for
-    bidirectional scans, the phase shift applied to backward lines.
+# def _adjust_line_bounds(
+#     start: np.ndarray,
+#     stop: np.ndarray,
+#     reversed_flags: np.ndarray,
+#     line_duration: int,
+#     # bidirectional: bool,
+#     # bidirectional_phase_shift: float,
+#     line_start_marker_delay: float,
+#     line_stop_marker_delay: float,
+# ) -> tuple[np.ndarray, np.ndarray]:
+#     """Shift line start/stop bounds by the configured delays and, for
+#     bidirectional scans, the phase shift applied to backward lines.
 
-    Shared by :class:`ImageReconstructor` and :class:`SegmentReconstructor` so
-    the phase-shift math only needs fixing in one place.
-    """
-    start = np.asarray(start, dtype=np.int64).copy()
-    stop = np.asarray(stop, dtype=np.int64).copy()
-    reversed_flags = np.asarray(reversed_flags, dtype=bool)
+#     Shared by :class:`ImageReconstructor` and :class:`SegmentReconstructor` so
+#     the phase-shift math only needs fixing in one place.
+#     """
+#     start = np.asarray(start, dtype=np.int64).copy()
+#     stop = np.asarray(stop, dtype=np.int64).copy()
+#     reversed_flags = np.asarray(reversed_flags, dtype=bool)
 
-    line_start_delay = int(line_start_marker_delay * line_duration)
-    line_stop_delay = int(line_stop_marker_delay * line_duration)
+#     line_start_delay = int(line_start_marker_delay * line_duration)
+#     line_stop_delay = int(line_stop_marker_delay * line_duration)
 
-    start += line_start_delay
-    stop += line_stop_delay
+#     start += line_start_delay
+#     stop += line_stop_delay
 
-    # if bidirectional:
-    #     shift = int(bidirectional_phase_shift * line_duration)
-    #     start[reversed_flags] += shift
-    #     stop[reversed_flags] += shift
+#     # if bidirectional:
+#     #     shift = int(bidirectional_phase_shift * line_duration)
+#     #     start[reversed_flags] += shift
+#     #     stop[reversed_flags] += shift
 
-    return start, stop
+#     return start, stop
 
 
 def _harmonic_correction(t: np.ndarray, laser_duty: float) -> np.ndarray:
@@ -111,7 +111,7 @@ class ScanConfig:
             1,
         ),  #  > 1 dimension means the scanning is sequential
         bidirectional: bool = False,
-        bidirectional_phase_shift: float = 0.0,
+        # bidirectional_phase_shift: float = 0.0,
         frame_start_marker_channel: int = 4,
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
@@ -124,7 +124,7 @@ class ScanConfig:
         self.pixels = pixels
         self.frames = frames
         self.max_detector = max_detector
-        self.bidirectional_phase_shift = bidirectional_phase_shift
+        # self.bidirectional_phase_shift = bidirectional_phase_shift
         self.harmonic_scan = harmonic_scan
         self.laser_duty = laser_duty
         self.line_start_marker_delay = line_start_marker_delay
@@ -602,6 +602,12 @@ class ImageReconstructor:
         stop = stop[valid]
         frame_idx = frame_idx[valid]
 
+        # Delays shift the accepted photon window; unequal delays change its phase scale.
+        start += int(self.config.line_start_marker_delay * self.line_duration)
+        stop += int(self.config.line_stop_marker_delay * self.line_duration)
+        # start, stop = self._adjust_line_bounds(start, stop, reversed_mask)
+
+
         # If bidirectional: even=forward, odd=reversed
         _, inverse, counts = np.unique(
             frame_idx, return_inverse=True, return_counts=True
@@ -619,9 +625,6 @@ class ImageReconstructor:
 
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
-        # Delays shift the accepted photon window; unequal delays change its phase scale.
-        start, stop = self._adjust_line_bounds(start, stop, reversed_mask)
-   
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
         result["stop_nsync"] = stop
@@ -634,20 +637,31 @@ class ImageReconstructor:
 
         return result
 
-    def _adjust_line_bounds(
-        self,
-        start: np.ndarray,
-        stop: np.ndarray,
-        reversed_flags: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return _adjust_line_bounds(
-            start,
-            stop,
-            reversed_flags,
-            self.line_duration,
-            self.config.line_start_marker_delay,
-            self.config.line_stop_marker_delay,
-        )
+    # def _adjust_line_bounds(
+    #     self,
+    #     start: np.ndarray,
+    #     stop: np.ndarray,
+    # #     reversed_flags: np.ndarray,
+    # ) -> tuple[np.ndarray, np.ndarray]:
+    #     start = np.asarray(start, dtype=np.int64).copy()
+    #     stop = np.asarray(stop, dtype=np.int64).copy()
+    #     # reversed_flags = np.asarray(reversed_flags, dtype=bool)
+
+    #     line_start_delay = int(self.config.line_start_marker_delay * line_duration)
+    #     line_stop_delay = int(self.config.line_stop_marker_delay * line_duration)
+
+    #     start += line_start_delay
+    #     stop += line_stop_delay
+    #     return start, stop
+
+    #     return _adjust_line_bounds(
+    #         start,
+    #         stop,
+    #         reversed_flags,
+    #         self.line_duration,
+    #         self.config.line_start_marker_delay,
+    #         self.config.line_stop_marker_delay,
+        # )
 
     def _assign_photons_to_segments(
         self, photons: np.ndarray, segments: np.ndarray
@@ -767,9 +781,11 @@ class ImageReconstructor:
             [self.config.bidirectional and (self._current_line_idx % 2 == 1)],
             dtype=bool,
         )
-        final_start, final_stop = self._adjust_line_bounds(
-            final_start, final_stop, final_reversed
-        )
+        # final_start, final_stop = self._adjust_line_bounds(
+        #     final_start, final_stop, final_reversed
+        # )
+        final_start += int(self.config.line_start_marker_delay * self.line_duration)
+        final_stop += int(self.config.line_stop_marker_delay * self.line_duration)
 
         final_segment = np.empty(1, dtype=segment_dtype)
         final_segment["start_nsync"] = final_start
@@ -1006,16 +1022,16 @@ class SegmentReconstructor:
         line_idx = np.arange(len(start))
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
-        start, stop = _adjust_line_bounds(
-            start,
-            stop,
-            reversed_mask,
-            self.line_duration,
-            # self.config.bidirectional,
-            # self.config.bidirectional_phase_shift,
-            self.config.line_start_marker_delay,
-            self.config.line_stop_marker_delay,
-        )
+        start += int(self.config.line_start_marker_delay * self.line_duration)
+        stop += int(self.config.line_stop_marker_delay * self.line_duration)
+        # start, stop = _adjust_line_bounds(
+        #     start,
+        #     stop,
+        #     reversed_mask,
+        #     self.line_duration,
+        #     self.config.line_start_marker_delay,
+        #     self.config.line_stop_marker_delay,
+        # )
 
         return start, stop, line_idx, reversed_mask
 

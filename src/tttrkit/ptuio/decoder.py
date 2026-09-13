@@ -24,9 +24,9 @@ def get_photons(events: np.ndarray):
 
 def resolve_markers(
     events: np.ndarray,
-    frame_marker_mask: int,
-    line_start_marker_mask: int,
-    line_stop_marker_mask: int,
+    frame_marker_mask: int = 4,
+    line_start_marker_mask: int = 1,
+    line_stop_marker_mask: int = 2,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Extract compatible frame, line-start, and line-stop marker events.
 
