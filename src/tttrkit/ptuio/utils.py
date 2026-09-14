@@ -161,6 +161,9 @@ def estimate_bidirectional_prealign(
 
     time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
 
+    # shift the time axis so it coincides with the delayed start markers
+    time_axis -= margin_s / 2
+
 
     probe_chunk, parity = _read_probe_chunk(
         reader,
@@ -199,6 +202,9 @@ def estimate_bidirectional_prealign(
     lags = np.arange(-len(forward) + 1, len(forward))
     pixel_shift = int(lags[np.argmax(cross_corr)])
     time_shift = pixel_shift * single_pixel_duration_nsync / laser_sync_rate
+
+    durations_s = marker_timing.durations / laser_sync_rate
+    periods_s = marker_timing.intervals / laser_sync_rate
  
     backward_aligned = np.roll(backward,pixel_shift)
 
@@ -213,6 +219,8 @@ def estimate_bidirectional_prealign(
             "backward_aligned":(("pixel",), backward_aligned),
             "durations_nsync": (("paired_interval"), marker_timing.durations),
             "periods_nsync": (("paired_interval"), marker_timing.intervals),            
+            "durations_s": (("paired_interval"), durations_s),
+            "periods_s": (("paired_interval"), periods_s),            
             "pixel_shift": ((), pixel_shift),
             "time_shift": ((), time_shift),
         },
@@ -242,6 +250,8 @@ def estimate_bidirectional_shift(
     Args:
         reader: TTTRReader instance
         config: A ScanConfig instance.
+        laser_sync_rate: Repetition rate of the sync signal in Hz
+        wrap: .ptu wrap-around
         max_shift: Maximum shift to try (±max_shift).
         steps: Number of shift steps to test.
         chunk_length: Number of events to read. Try increasing it when reconstruction fails, perhaps the reconstruction is feature-less
@@ -250,7 +260,10 @@ def estimate_bidirectional_shift(
         verbose: Whether to print progress.
 
     Returns:
-        Tuple of best phase shift (float) in units of line duration (e.g., -0.015) and numpy array of shifts, correlation scores, and fit for inspection.
+        XArray dataset:
+        best_shift: optimized shift value in s,
+        scores: correlation amplitude for each shift,
+        fit: values of the Gaussian fit,
     """
 
     if not config.bidirectional:
