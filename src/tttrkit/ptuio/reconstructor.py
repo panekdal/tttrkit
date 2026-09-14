@@ -4,6 +4,7 @@ import xarray as xr
 from numpy.typing import NDArray
 
 from .decoder import event_dtype, get_markers, get_photons, resolve_markers
+from .marker_timing import analyze_stop_marker_timing
 
 segment_dtype = [
     ("start_nsync", "i8"),
@@ -134,9 +135,8 @@ class ScanConfig:
         max_detector: int = 64,
         line_accumulations: tuple = (
             1,
-        ),  #  > 1 dimension means the scanning is sequential
+        ),  
         bidirectional: bool = False,
-        # bidirectional_phase_shift: float = 0.0,
         frame_start_marker_channel: int = 4,
         line_start_marker_channel: int = 1,
         line_stop_marker_channel: int = 2,
@@ -149,7 +149,6 @@ class ScanConfig:
         self.pixels = pixels
         self.frames = frames
         self.max_detector = max_detector
-        # self.bidirectional_phase_shift = bidirectional_phase_shift
         self.harmonic_scan = harmonic_scan
         self.laser_duty = laser_duty
         self.line_start_marker_delay = line_start_marker_delay
@@ -383,6 +382,7 @@ class ImageReconstructor:
 
         if not self._stop_phase_computed:
             self._compute_stop_phase(
+                frame_markers["nsync"],
                 start_markers["nsync"], stop_markers["nsync"]
             )
 
@@ -828,66 +828,28 @@ class ImageReconstructor:
         )
         self._partial_start_nsync = None
 
-    def _extract_markers(self, events, codes):
-        return get_markers(events, codes)
-
     def _compute_stop_phase(
         self,
+        frame_nsyncs: NDArray[np.uint64],
         start_nsyncs: NDArray[np.uint64],
         stop_nsyncs: NDArray[np.uint64],
         default_phase: float = 0.80,
     ) -> None:
-        if start_nsyncs.dtype != np.uint64 or stop_nsyncs.dtype != np.uint64:
-            raise TypeError(
-                "start_nsyncs and stop_nsyncs must be uint64 arrays"
-            )
-        start_nsyncs = start_nsyncs.astype(np.int64, copy=False)
-        stop_nsyncs = stop_nsyncs.astype(np.int64, copy=False)
-
-        if len(start_nsyncs) < 2:
-            print("No valid start markers. Phase not calculated!")
-            self.stop_marker_phase = None
-            self.line_duration = 0
-            return
-
-        if len(stop_nsyncs) == 0:
-            print("No valid stop markers. Using default!")
-            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
-            self.stop_marker_phase = default_phase
-            self.line_duration = int(np.median(intervals) * default_phase)
-            self._stop_phase_computed = True
-            return
-
-        # Paired analysis
-        pair_count = min(len(stop_nsyncs), len(start_nsyncs) - 1)
-        durations = stop_nsyncs[:pair_count] - start_nsyncs[:pair_count]
-        intervals = (
-            start_nsyncs[1 : 1 + pair_count] - start_nsyncs[:pair_count]
+        timing = analyze_stop_marker_timing(
+            frame_nsyncs, start_nsyncs, stop_nsyncs
         )
 
-        # Basic sanity check
-        if np.any(durations <= 0):
-            print("Invalid stop markers (<= start). Using default.")
-            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
-            self.stop_marker_phase = default_phase
-            self.line_duration = int(np.median(intervals) * default_phase)
+        if timing.pair_count:
+            self.stop_marker_phase = timing.median_phase
+            self.line_duration = int(timing.median_duration)
             self._stop_phase_computed = True
-            return
-
-        phase_estimates = durations / intervals
-        valid = (phase_estimates > 0) & (phase_estimates < 1)
-
-        if not np.any(valid):
-            print("No valid stop marker timings. Using default.")
-            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
+        elif timing.median_interval is not None:
             self.stop_marker_phase = default_phase
-            self.line_duration = int(np.median(intervals) * default_phase)
+            self.line_duration = int(timing.median_interval * default_phase)
+            self._stop_phase_computed = True
         else:
-            self.stop_marker_phase = float(np.median(phase_estimates[valid]))
-            self.line_duration = int(np.median(durations[valid]))
-
-        self._stop_phase_computed = True
-        return
+            self.stop_marker_phase = None
+            self.line_duration = 0
 
 # TODO: add option to select marker channels and validation of marker chan
 
@@ -951,12 +913,11 @@ class SegmentReconstructor:
             # Not enough line-start markers to bound a single complete line
             return self._empty_dataset()
 
-        # Drop stop markers belonging to a line whose start was in a previous
-        # chunk (i.e. preceding this chunk's first start marker), so
-        # stop_markers[0] truly pairs with start_markers[0].
-        stop_markers = stop_markers[stop_markers["nsync"] > start_markers["nsync"][0]]
-
-        self._compute_stop_phase(start_markers["nsync"], stop_markers["nsync"])
+        self._compute_stop_phase(
+            frame_markers["nsync"],
+            start_markers["nsync"],
+            stop_markers["nsync"],
+        )
         if self.line_duration <= 0:
             return self._empty_dataset()
 
@@ -1016,32 +977,24 @@ class SegmentReconstructor:
 
     def _compute_stop_phase(
         self,
+        frame_nsyncs: NDArray[np.uint64],
         start_nsyncs: NDArray[np.uint64],
         stop_nsyncs: NDArray[np.uint64],
         default_phase: float = 0.80,
     ) -> None:
-        start_nsyncs = start_nsyncs.astype(np.int64, copy=False)
-        stop_nsyncs = stop_nsyncs.astype(np.int64, copy=False)
+        timing = analyze_stop_marker_timing(
+            frame_nsyncs, start_nsyncs, stop_nsyncs
+        )
 
-        if len(stop_nsyncs) == 0:
-            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
+        if timing.pair_count:
+            self.stop_marker_phase = timing.median_phase
+            self.line_duration = int(timing.median_duration)
+        elif timing.median_interval is not None:
             self.stop_marker_phase = default_phase
-            self.line_duration = int(np.median(intervals) * default_phase)
-            return
-
-        # Use only the first start/stop pair, as requested
-        start0, stop0 = start_nsyncs[0], stop_nsyncs[0]
-        interval0 = start_nsyncs[1] - start_nsyncs[0]
-        duration0 = stop0 - start0
-
-        if duration0 <= 0 or not (0 < duration0 / interval0 < 1):
-            intervals = start_nsyncs[1:] - start_nsyncs[:-1]
-            self.stop_marker_phase = default_phase
-            self.line_duration = int(np.median(intervals) * default_phase)
-            return
-
-        self.stop_marker_phase = float(duration0 / interval0)
-        self.line_duration = int(duration0)
+            self.line_duration = int(timing.median_interval * default_phase)
+        else:
+            self.stop_marker_phase = None
+            self.line_duration = 0
 
     def _build_segments(
         self, start_nsyncs: NDArray[np.uint64]

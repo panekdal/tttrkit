@@ -225,69 +225,69 @@ from .reconstructor import ScanConfig
 #         return self._role_to_channel.get(role, ())
 
 
-class MarkerInterpreter:
-    # MAKE OVER ENTIRELY. MAKE IT ACCEPT TUPPLE AND BE CALLED
-    # cfg = ScanConfig(bidirectional=True, line_start_marker=1, line_stop_marker=2, frame_start_marker=4)
-    # interpreter = MarkerInterpreter(scan_config=cfg)
-    # line_start_events = interpreter.extract(corrected, cfg.line_start_marker)
-    #  i.e., tuple
+# class MarkerInterpreter:
+#     # MAKE OVER ENTIRELY. MAKE IT ACCEPT TUPPLE AND BE CALLED
+#     # cfg = ScanConfig(bidirectional=True, line_start_marker=1, line_stop_marker=2, frame_start_marker=4)
+#     # interpreter = MarkerInterpreter(scan_config=cfg)
+#     # line_start_events = interpreter.extract(corrected, cfg.line_start_marker)
+#     #  i.e., tuple
 
-    def __init__(self, scan_config: ScanConfig):
-        if not isinstance(scan_config, ScanConfig):
-            raise TypeError("MarkerInterpreter requires a ScanConfig object")
-        self.scan_config = scan_config
+#     def __init__(self, scan_config: ScanConfig):
+#         if not isinstance(scan_config, ScanConfig):
+#             raise TypeError("MarkerInterpreter requires a ScanConfig object")
+#         self.scan_config = scan_config
 
-        self._role_to_codes = {
-            "frame_start": self.scan_config.frame_start_marker_channel,
-        }
+#         self._role_to_codes = {
+#             "frame_start": self.scan_config.frame_start_marker_channel,
+#         }
 
-        # Invert for special → role lookup (optional, if needed for classify)
-        self._channel_to_role = {
-            code: role
-            for role, codes in self._role_to_channel.items()
-            for code in codes
-        }
+#         # Invert for special → role lookup (optional, if needed for classify)
+#         self._channel_to_role = {
+#             code: role
+#             for role, codes in self._role_to_channel.items()
+#             for code in codes
+#         }
 
-    # def extract_by_role(self, events, role: str):
-    #     if role not in self._role_to_channel:
-    #         raise ValueError(f"Unknown role: {role}")
-    #     codes = self._role_to_channel[role]
-    #     return events[
-    #         (events['channel'] < 63) & np.isin(events['special'], codes)
-    #     ]
+#     # def extract_by_role(self, events, role: str):
+#     #     if role not in self._role_to_channel:
+#     #         raise ValueError(f"Unknown role: {role}")
+#     #     codes = self._role_to_channel[role]
+#     #     return events[
+#     #         (events['channel'] < 63) & np.isin(events['special'], codes)
+#     #     ]
 
-    def classify(self, events):
-        is_marker = (events["channel"] < 63) & (events["special"] != 0)
-        labels = np.full(events.shape[0], "", dtype=object)
-        for channel, role in self._channel_to_role.items():
-            mask = is_marker & (events["special"] == channel)
-            labels[mask] = role
-        return labels
+#     def classify(self, events):
+#         is_marker = (events["channel"] < 63) & (events["special"] != 0)
+#         labels = np.full(events.shape[0], "", dtype=object)
+#         for channel, role in self._channel_to_role.items():
+#             mask = is_marker & (events["special"] == channel)
+#             labels[mask] = role
+#         return labels
 
-    def roles(self):
-        return list(self._role_to_channel.keys())
+#     def roles(self):
+#         return list(self._role_to_channel.keys())
 
-    def channel_for(self, role):
-        return self._role_to_channel.get(role, ())
-
-
-# --- Optional Helpers ---
+#     def channel_for(self, role):
+#         return self._role_to_channel.get(role, ())
 
 
-def marker_events(events: np.ndarray) -> np.ndarray:
-    """Return only events where channel == 63 and special != 15 (non-overflow markers)."""
-    return events[(events["channel"] < 63) & (events["special"] != 0)]
+# # --- Optional Helpers ---
 
 
-def overflow_events(events: np.ndarray) -> np.ndarray:
-    """Return overflow marker events."""
-    return events[(events["channel"] == 63) & (events["special"] != 0)]
+# def marker_events(events: np.ndarray) -> np.ndarray:
+#     """Return only events where channel == 63 and special != 15 (non-overflow markers)."""
+#     return events[(events["channel"] < 63) & (events["special"] != 0)]
 
 
-def get_marker_distribution(events: np.ndarray) -> Dict[int, int]:
-    """Returns a count of each special marker code."""
-    mask = (events["channel"] < 63) & (events["special"] != 0)
-    markers = events["channel"][mask]
-    unique, counts = np.unique(markers, return_counts=True)
-    return dict(zip(unique.tolist(), counts.tolist()))
+# def overflow_events(events: np.ndarray) -> np.ndarray:
+#     """Return overflow marker events."""
+#     return events[(events["channel"] == 63) & (events["special"] != 0)]
+
+
+# def get_marker_distribution(events: np.ndarray) -> Dict[int, int]:
+#     """Returns a count of each special marker code."""
+#     mask = (events["channel"] < 63) & (events["special"] != 0)
+#     markers = events["channel"][mask]
+#     unique, counts = np.unique(markers, return_counts=True)
+#     return dict(zip(unique.tolist(), counts.tolist()))
 
