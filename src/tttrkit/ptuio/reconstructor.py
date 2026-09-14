@@ -21,6 +21,31 @@ AVAILABLE_OUTPUTS = [
 ]
 
 
+def _build_line_windows(
+    line_start_nsyncs: NDArray[np.uint64],
+    *,
+    line_duration: int,
+    line_idx: NDArray[np.int64],
+    bidirectional: bool,
+    line_start_marker_delay: float,
+    line_stop_marker_delay: float,
+    laser_sync_rate: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build photon-acceptance windows for a set of scan lines.
+
+    ``line_start_nsyncs`` contains one entry per complete line, rather than
+    the additional terminal marker used to establish line completeness.
+    """
+    start = line_start_nsyncs.astype(np.int64, copy=True)
+    stop = start + line_duration
+
+    start += int(line_start_marker_delay * laser_sync_rate)
+    stop += int(line_stop_marker_delay * laser_sync_rate)
+    reversed_mask = bidirectional & (line_idx % 2 == 1)
+
+    return start, stop, reversed_mask
+
+
 # def _adjust_line_bounds(
 #     start: np.ndarray,
 #     stop: np.ndarray,
@@ -603,10 +628,6 @@ class ImageReconstructor:
         stop = stop[valid]
         frame_idx = frame_idx[valid]
 
-        # Delays shift the accepted photon window; unequal delays change its phase scale.
-        start += int(self.config.line_start_marker_delay * self.laser_sync_rate)
-        stop += int(self.config.line_stop_marker_delay * self.laser_sync_rate)
-
         # If bidirectional: even=forward, odd=reversed
         _, inverse, counts = np.unique(
             frame_idx, return_inverse=True, return_counts=True
@@ -622,7 +643,15 @@ class ImageReconstructor:
         self._current_frame_idx = frame_idx[-1]
         self._current_line_idx = line_idx[-1] + 1
 
-        reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
+        start, stop, reversed_mask = _build_line_windows(
+            start,
+            line_duration=self.line_duration,
+            line_idx=line_idx,
+            bidirectional=self.config.bidirectional,
+            line_start_marker_delay=self.config.line_start_marker_delay,
+            line_stop_marker_delay=self.config.line_stop_marker_delay,
+            laser_sync_rate=self.laser_sync_rate,
+        )
 
         result = np.empty(len(start), dtype=segment_dtype)
         result["start_nsync"] = start
@@ -1017,21 +1046,16 @@ class SegmentReconstructor:
     def _build_segments(
         self, start_nsyncs: NDArray[np.uint64]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        start = start_nsyncs[:-1].astype(np.int64)
-        stop = start + self.line_duration
-        line_idx = np.arange(len(start))
-        reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
-
-        start += int(self.config.line_start_marker_delay * self.laser_sync_rate)
-        stop += int(self.config.line_stop_marker_delay * self.laser_sync_rate)
-        # start, stop = _adjust_line_bounds(
-        #     start,
-        #     stop,
-        #     reversed_mask,
-        #     self.line_duration,
-        #     self.config.line_start_marker_delay,
-        #     self.config.line_stop_marker_delay,
-        # )
+        line_idx = np.arange(len(start_nsyncs) - 1, dtype=np.int64)
+        start, stop, reversed_mask = _build_line_windows(
+            start_nsyncs[:-1],
+            line_duration=self.line_duration,
+            line_idx=line_idx,
+            bidirectional=self.config.bidirectional,
+            line_start_marker_delay=self.config.line_start_marker_delay,
+            line_stop_marker_delay=self.config.line_stop_marker_delay,
+            laser_sync_rate=self.laser_sync_rate,
+        )
 
         return start, stop, line_idx, reversed_mask
 
