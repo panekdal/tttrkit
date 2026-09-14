@@ -7,6 +7,7 @@ from scipy.signal import correlate
 from .decoder import T3OverflowCorrector, resolve_markers
 from .reader import TTTRReader
 from .reconstructor import ScanConfig, SegmentReconstructor
+from .marker_timing import analyze_stop_marker_timing
 from scipy.optimize import curve_fit
 
 # --- Reconstruction helpers ---
@@ -122,35 +123,27 @@ def estimate_bidirectional_prealign(
         reader, cfg, wrap, chunk_length, skip_chunks, verbose
     )
 
-    _, start_markers, stop_markers = resolve_markers(
+    frame_markers, start_markers, stop_markers = resolve_markers(
         corrected_chunk,
         cfg.frame_start_marker_channel,
         cfg.line_start_marker_channel,
         cfg.line_stop_marker_channel,
     )    
 
-    start_marker_nsync = start_markers['nsync']
-    stop_marker_nsync = stop_markers['nsync']
-    stop_marker_nsync = stop_marker_nsync[stop_marker_nsync > start_marker_nsync[0]]
-
-    n_pairs = min(len(start_marker_nsync),len(stop_marker_nsync))
+    marker_timing = analyze_stop_marker_timing(
+        frame_markers["nsync"],
+        start_markers["nsync"],
+        stop_markers["nsync"],
+    )
+    duration_nsync = int(marker_timing.median_duration)
+    pauses_nsync = marker_timing.intervals - marker_timing.durations
+    # duty = np.median(durations_nsync) / np.median(periods_nsync)
     if verbose:
-        print(f"{n_pairs} marker paris found in the chunk")
-    start_marker_nsync = start_marker_nsync[:n_pairs]
-    stop_marker_nsync = stop_marker_nsync[:n_pairs]
-
-    periods_nsync = np.diff(start_marker_nsync)
-    durations_nsync = stop_marker_nsync - start_marker_nsync
-    duration_nsync = np.median(durations_nsync)
-    pauses_nsync = start_marker_nsync[1:] - stop_marker_nsync[:-1]
-    duty = np.median(durations_nsync) / np.median(periods_nsync)
-    if verbose:
-        print(f"Durations [nsync]: {np.median(durations_nsync)} +/- {np.std(durations_nsync)}")
-        print(f"Puases [nsync]: {np.median(pauses_nsync)} +/- {np.std(pauses_nsync)}")
-        print(f"Duty: {duty}")
+        print(f"Durations [nsync]: {marker_timing.median_duration} +/- {np.std(marker_timing.durations)}")
+        print(f"Pauses [nsync]: {np.median(pauses_nsync)} +/- {np.std(pauses_nsync)}")
+        print(f"Duty: {marker_timing.median_phase}")
 
     # add margins to the reconstructed lines duration
-    # pause_nsync = 
     margin_nsync = int(np.median(pauses_nsync)) + int(cfg.line_start_marker_delay * laser_sync_rate)
     margin_nsync -= int(cfg.line_stop_marker_delay * laser_sync_rate)
 
@@ -206,11 +199,7 @@ def estimate_bidirectional_prealign(
     lags = np.arange(-len(forward) + 1, len(forward))
     pixel_shift = int(lags[np.argmax(cross_corr)])
     time_shift = pixel_shift * single_pixel_duration_nsync / laser_sync_rate
-    # phase_shift = pixel_shift * probe_config.pixels / (np.median(durations_nsync) + margin_fraction * np.median(pauses_nsync)) / 2
-
-    # phase_shift /= (1-cfg.line_start_marker_delay)
-    # phase_shift /=(1+cfg.line_start_marker_delay)
-
+ 
     backward_aligned = np.roll(backward,pixel_shift)
 
     if verbose:
@@ -222,14 +211,14 @@ def estimate_bidirectional_prealign(
             "forward": (("pixel",), forward),
             "backward": (("pixel",), backward),
             "backward_aligned":(("pixel",), backward_aligned),
-            "durations_nsync": (("marker_pair"), durations_nsync),
+            "durations_nsync": (("paired_interval"), marker_timing.durations),
+            "periods_nsync": (("paired_interval"), marker_timing.intervals),            
             "pixel_shift": ((), pixel_shift),
             "time_shift": ((), time_shift),
-            "period_nsync": ((), np.median(periods_nsync))
         },
         coords={"pixel": pixel,
                 "time_axis": time_axis,
-                "marker_pair": np.arange(n_pairs-parity), 
+                "paired_interval": np.arange(marker_timing.pair_count), 
                 },
     )
 
