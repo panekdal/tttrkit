@@ -17,8 +17,10 @@ def _gaussian(x, a, mu, sigma, c):
 
 
 def _fit_gaussian_peak(
-    shifts: np.ndarray, scores: np.ndarray
-) -> tuple[float, np.ndarray] | None:
+    shifts: np.ndarray, 
+    scores: np.ndarray,
+    number_of_plot_points: int = 100,
+) -> tuple[float, np.ndarray, np.ndarray] | None:
     try:
         p0 = [
             scores.max() - scores.min(),
@@ -27,8 +29,10 @@ def _fit_gaussian_peak(
             scores.min(),
         ]
         popt, _ = curve_fit(_gaussian, shifts, scores, p0=p0)
-        fit = _gaussian(shifts, *popt)
-        return float(popt[1]), fit  # mu = estimated phase shift
+        fit_shifts = np.linspace(shifts[0],shifts[-1],number_of_plot_points)
+
+        fit = _gaussian(fit_shifts, *popt)
+        return float(popt[1]), fit_shifts, fit  # mu = estimated phase shift
 
     except RuntimeError:
         return None
@@ -104,12 +108,13 @@ def _read_probe_chunk(
 def estimate_bidirectional_prealign(
     reader: TTTRReader,
     cfg: ScanConfig,
+    laser_sync_rate: float,
     wrap: int = 1024,
     chunk_length: int = 500_000,
     skip_chunks: int = 0,
     verbose = True,
     margin_fraction: float = .9, # must be between 0 and 1 
-):
+) -> xr.Dataset:
     probe_config = copy.deepcopy(cfg)
     # probe_config.bidirectional_phase_shift = 0.0
 
@@ -119,9 +124,9 @@ def estimate_bidirectional_prealign(
 
     _, start_markers, stop_markers = resolve_markers(
         corrected_chunk,
-        4,
-        1,
-        2,
+        cfg.frame_start_marker_channel,
+        cfg.line_start_marker_channel,
+        cfg.line_stop_marker_channel,
     )    
 
     start_marker_nsync = start_markers['nsync']
@@ -134,26 +139,35 @@ def estimate_bidirectional_prealign(
     start_marker_nsync = start_marker_nsync[:n_pairs]
     stop_marker_nsync = stop_marker_nsync[:n_pairs]
 
-    periods = np.diff(start_marker_nsync)
-    durations = stop_marker_nsync - start_marker_nsync
-    pauses = start_marker_nsync[1:] - stop_marker_nsync[:-1]
-    duty = np.median(durations) / np.median(periods)
+    periods_nsync = np.diff(start_marker_nsync)
+    durations_nsync = stop_marker_nsync - start_marker_nsync
+    duration_nsync = np.median(durations_nsync)
+    pauses_nsync = start_marker_nsync[1:] - stop_marker_nsync[:-1]
+    duty = np.median(durations_nsync) / np.median(periods_nsync)
     if verbose:
-        print(f"Durations [nsync]: {np.median(durations)} +/- {np.std(durations)}")
-        print(f"Puases [nsync]: {np.median(pauses)} +/- {np.std(pauses)}")
+        print(f"Durations [nsync]: {np.median(durations_nsync)} +/- {np.std(durations_nsync)}")
+        print(f"Puases [nsync]: {np.median(pauses_nsync)} +/- {np.std(pauses_nsync)}")
         print(f"Duty: {duty}")
 
+    # add margins to the reconstructed lines duration
+    # pause_nsync = 
+    margin_nsync = int(np.median(pauses_nsync)) + int(cfg.line_start_marker_delay * laser_sync_rate)
+    margin_nsync -= int(cfg.line_stop_marker_delay * laser_sync_rate)
+
+    margin_s = margin_fraction * margin_nsync / laser_sync_rate
+    probe_config.line_start_marker_delay += -margin_s /2
+    probe_config.line_stop_marker_delay += margin_s /2
+
+    window_nsync = margin_nsync + duration_nsync
+
     # increase proportionally the number of pixels
-    probe_config.pixels = int(np.ceil(cfg.lines / duty))
+    probe_config.pixels = int(np.ceil(cfg.pixels * (window_nsync) / duration_nsync))
+    pixel = np.arange(probe_config.pixels)
 
+    single_pixel_duration_nsync = int((window_nsync) / probe_config.pixels)
 
-    pause_phase = np.median(pauses) / np.median(durations) 
-    pause_phase += cfg.line_start_marker_delay 
-    pause_phase -= cfg.line_stop_marker_delay
-    
-    margin = margin_fraction*pause_phase /2
-    probe_config.line_start_marker_delay += -margin
-    probe_config.line_stop_marker_delay += margin
+    time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
+
 
     probe_chunk, parity = _read_probe_chunk(
         reader,
@@ -164,7 +178,7 @@ def estimate_bidirectional_prealign(
         verbose
     )
 
-    seg_recon = SegmentReconstructor(probe_config)
+    seg_recon = SegmentReconstructor(probe_config,laser_sync_rate)
     ds = seg_recon.reconstruct(probe_chunk)
 
     n_lines = ds.sizes["line"]
@@ -191,28 +205,30 @@ def estimate_bidirectional_prealign(
     )
     lags = np.arange(-len(forward) + 1, len(forward))
     pixel_shift = int(lags[np.argmax(cross_corr)])
-    phase_shift = pixel_shift * probe_config.pixels / (np.median(durations) + margin_fraction * np.median(pauses)) / 2
+    time_shift = pixel_shift * single_pixel_duration_nsync / laser_sync_rate
+    # phase_shift = pixel_shift * probe_config.pixels / (np.median(durations_nsync) + margin_fraction * np.median(pauses_nsync)) / 2
 
-    phase_shift /= (1-cfg.line_start_marker_delay)
-    phase_shift /=(1+cfg.line_start_marker_delay)
+    # phase_shift /= (1-cfg.line_start_marker_delay)
+    # phase_shift /=(1+cfg.line_start_marker_delay)
 
     backward_aligned = np.roll(backward,pixel_shift)
 
     if verbose:
         print(f"Coarse forward/backward pixel offset: {pixel_shift}")
-        print(f"Coarse bidirectional phase shift: {phase_shift:.5f}")
+        print(f"Coarse shift [μs]: {1e6 * time_shift:.3f}")
 
     return xr.Dataset(
         {
             "forward": (("pixel",), forward),
             "backward": (("pixel",), backward),
             "backward_aligned":(("pixel",), backward_aligned),
-            "durations_nsync": (("marker_pair"), durations),
+            "durations_nsync": (("marker_pair"), durations_nsync),
             "pixel_shift": ((), pixel_shift),
-            "phase_shift": ((), phase_shift),
-            "period_nsync": ((), np.median(periods))
+            "time_shift": ((), time_shift),
+            "period_nsync": ((), np.median(periods_nsync))
         },
-        coords={"pixel": np.arange(probe_config.pixels),
+        coords={"pixel": pixel,
+                "time_axis": time_axis,
                 "marker_pair": np.arange(n_pairs-parity), 
                 },
     )
@@ -222,13 +238,14 @@ def estimate_bidirectional_prealign(
 def estimate_bidirectional_shift(
     reader: TTTRReader,
     config: ScanConfig,
+    laser_sync_rate: float,
     wrap: int = 1024,
-    max_shift: float = 0.01,
+    max_shift: float = 5e-6, # in seconds
     steps: int = 11,
     chunk_length: int = 500_000,
     skip_chunks: int = 0,
     verbose: bool = True,
-) -> tuple[float, np.ndarray]:
+) -> xr.Dataset:
     """
     Estimate the optimal phase shift (as fraction of line duration) for backward lines
     in bidirectional scanning.
@@ -260,6 +277,7 @@ def estimate_bidirectional_shift(
         + max_shift,
         steps,
     )
+
     scores = np.zeros_like(shifts)
 
     # Read the probe chunk once and reuse it for every shift, so all shifts are
@@ -275,7 +293,7 @@ def estimate_bidirectional_shift(
         test_config = copy.deepcopy(config)
         test_config.line_start_marker_delay += shift
         test_config.line_stop_marker_delay += shift
-        seg_recon = SegmentReconstructor(test_config)
+        seg_recon = SegmentReconstructor(test_config,laser_sync_rate)
         ds = seg_recon.reconstruct(corrected_chunk)
 
         photon_count = ds.photon_count.values.astype(np.float32)
@@ -299,7 +317,7 @@ def estimate_bidirectional_shift(
         if len(fwd_vals) == 0:
             scores[i] = 0.0
             if verbose:
-                print(f"Shift {shift:.4f} → no usable line pairs")
+                print(f"Shift {shift:.2f} μs → no usable line pairs")
             continue
 
         # Subtract mean along each line (axis=1)
@@ -312,21 +330,39 @@ def estimate_bidirectional_shift(
         scores[i] = score
 
         if verbose:
-            print(f"Shift {shift:.4f} → score {score:.2f}")
+            print(f"Shift {1e6 * shift:.2f} μs → score {score:.2f}")
 
-    # best_shift = shifts[np.argmax(scores)]
-
+    shifts = shifts * 1e6  # scale up otherwise it fails
     fit_result = _fit_gaussian_peak(shifts, scores)
     if fit_result is None:
         best_shift = float(shifts[np.argmax(scores)])
+        fit_shifts = np.full_like(scores, np.nan)
         fit = np.full_like(scores, np.nan)
     else:
-        best_shift, fit = fit_result
+        best_shift, fit_shifts, fit = fit_result
+
+    # scale back to seconds
+    best_shift = best_shift * 1e-6
+    shifts = shifts * 1e-6
+    fit_shifts = fit_shifts * 1e-6
+
 
     if verbose:
-        print(f"Best estimated shift: {best_shift:.5f}")
+        print(f"Best estimated shift: {1e6 * best_shift:.3f} μs")
 
-    return best_shift, np.stack((shifts, scores, fit))
+    return xr.Dataset(
+        {
+            "best_shift": ((),best_shift),
+            "scores": (("test_shift",),scores),
+            "fit": (("fit_shift",),fit),
+        },
+        coords={
+            "test_shift": shifts,
+            "fit_shift": fit_shifts,
+        }
+    )
+
+    # return best_shift, np.stack((shifts, scores, fit))
 
 
 # --- Marker Helpers ---

@@ -284,13 +284,14 @@ class ImageReconstructor:
         self.requested_outputs = set(outputs)
         self._resolve_dependencies()
 
-        # Initialize output arrays
         self.tcspc_channels = tcspc_channels
         self.tcspc_bin_factor = tcspc_bin_factor
         self.tcspc_hist_channels = tcspc_channels // tcspc_bin_factor
-        # self.tcspc_resolution = tcspc_resolution
         self.tcspc_resolution = tcspc_resolution * tcspc_bin_factor
         self.omega = 2 * np.pi * laser_sync_rate * self.tcspc_resolution
+        self.laser_sync_rate = laser_sync_rate
+
+        # Initialize output arrays
         if "arrival_sum" in self._required:
             self.arrival_sum = np.zeros(self.shape, dtype=np.float32)
         if "photon_count" in self._required:
@@ -603,10 +604,8 @@ class ImageReconstructor:
         frame_idx = frame_idx[valid]
 
         # Delays shift the accepted photon window; unequal delays change its phase scale.
-        start += int(self.config.line_start_marker_delay * self.line_duration)
-        stop += int(self.config.line_stop_marker_delay * self.line_duration)
-        # start, stop = self._adjust_line_bounds(start, stop, reversed_mask)
-
+        start += int(self.config.line_start_marker_delay * self.laser_sync_rate)
+        stop += int(self.config.line_stop_marker_delay * self.laser_sync_rate)
 
         # If bidirectional: even=forward, odd=reversed
         _, inverse, counts = np.unique(
@@ -886,10 +885,11 @@ class SegmentReconstructor:
     index after which a frame-start marker was detected.
     """
 
-    def __init__(self, config: ScanConfig):
+    def __init__(self, config: ScanConfig, laser_sync_rate: float = 40e6):
         if not isinstance(config, ScanConfig):
             raise TypeError("SegmentReconstructor requires a ScanConfig object")
         self.config = config
+        self.laser_sync_rate = laser_sync_rate
         self.stop_marker_phase = None
         self.line_duration = 0
 
@@ -1022,8 +1022,8 @@ class SegmentReconstructor:
         line_idx = np.arange(len(start))
         reversed_mask = self.config.bidirectional & (line_idx % 2 == 1)
 
-        start += int(self.config.line_start_marker_delay * self.line_duration)
-        stop += int(self.config.line_stop_marker_delay * self.line_duration)
+        start += int(self.config.line_start_marker_delay * self.laser_sync_rate)
+        stop += int(self.config.line_stop_marker_delay * self.laser_sync_rate)
         # start, stop = _adjust_line_bounds(
         #     start,
         #     stop,
