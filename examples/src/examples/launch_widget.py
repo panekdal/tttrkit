@@ -1,7 +1,8 @@
 from qtpy.QtWidgets import QApplication
-from track_analysis_widget import TrackAnalysisWidget
+from marker_alignment_widget import MarkerAnalysisWidget
 
 app = QApplication.instance() or QApplication([])
-widget = TrackAnalysisWidget()
+widget = MarkerAnalysisWidget()
+
 widget.show()
 app.exec()
