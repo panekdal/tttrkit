@@ -159,8 +159,8 @@ def estimate_bidirectional_prealign(
     time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
 
     # shift the time axis so it coincides with the start marker(s)
-    time_axis -= margin_s /2
-
+    time_axis -= margin_s
+    
     probe_chunk, parity = _read_probe_chunk(
         reader,
         probe_config,
@@ -363,10 +363,11 @@ def estimate_bidirectional_shift(
 
 # --- Marker Helpers ---
 
-
 def marker_events(events: np.ndarray) -> np.ndarray:
     """Return only events where channel == 63 and special != 15 (non-overflow markers)."""
     return events[(events["channel"] < 63) & (events["special"] != 0)]
+
+
 
 
 def get_marker_distribution(events: np.ndarray) -> Dict[int, int]:
