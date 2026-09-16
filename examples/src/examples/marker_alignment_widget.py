@@ -500,7 +500,7 @@ class MarkerAnalysisWidget(QWidget):
         self.skip_n_chunks_input.setRange(0, 100)
         self.skip_n_chunks_input.setSingleStep(1)
         self.skip_n_chunks_input.setFixedWidth(150)
-        self.skip_n_chunks_input.setValue(5)
+        self.skip_n_chunks_input.setValue(1)
 
         self.max_shift_input = QDoubleSpinBox()
         self.max_shift_input.setRange(0.1, 1_000.0)
@@ -568,8 +568,8 @@ class MarkerAnalysisWidget(QWidget):
 
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.estimate_button)
-        button_layout.addWidget(self.show_align_button)
         button_layout.addWidget(self.optimize_button)
+        button_layout.addWidget(self.show_align_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
         layout.addLayout(self.marker_checkbox_layout)
@@ -720,7 +720,7 @@ class MarkerAnalysisWidget(QWidget):
 
             pixel_shift = int(result["pixel_shift"].item())
             time_shift = float(result["time_shift"].item())
-            applied_shift_us = -time_shift * 1e6
+            applied_shift_us = time_shift * 1e6
             self.shift_input.setValue(applied_shift_us)
             self.fix_shift_checkbox.setChecked(True)
             self._sync_stop_from_shift()
@@ -757,7 +757,7 @@ class MarkerAnalysisWidget(QWidget):
                 False,
             )
             segments = SegmentReconstructor(config, laser_sync_rate=sync_rate)
-            photon_count = segments.reconstruct(corrected_chunk).photon_count.values[parity:]
+            photon_count = segments.reconstruct(corrected_chunk).photon_count.values
             if len(photon_count) < 2:
                 raise ValueError(
                     "Not enough complete line pairs in the probe chunk. "

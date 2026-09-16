@@ -159,7 +159,7 @@ def estimate_bidirectional_prealign(
     time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
 
     # shift the time axis so it coincides with the start marker(s)
-    time_axis -= margin_s
+    time_axis -= margin_s / 2
     
     probe_chunk, parity = _read_probe_chunk(
         reader,
