@@ -756,6 +756,7 @@ class MarkerAnalysisWidget(QWidget):
                 self.skip_n_chunks_input.value(),
                 False,
             )
+
             segments = SegmentReconstructor(config, laser_sync_rate=sync_rate)
             photon_count = segments.reconstruct(corrected_chunk).photon_count.values
             if len(photon_count) < 2:
@@ -764,9 +765,24 @@ class MarkerAnalysisWidget(QWidget):
                     "Try increasing the chunk size."
                 )
 
+            n = len(photon_count) // 2
+            odd_line_sum = photon_count[0:2*n:2].sum(axis=0).astype(float)
+            even_line_sum = photon_count[1:2*n:2].sum(axis=0).astype(float)
+
+            if parity == 0:
+                forward = odd_line_sum
+                backward = even_line_sum
+            else:
+                forward = even_line_sum[::-1]
+                backward = odd_line_sum[::-1]
+
+
+
             self.plot.set_segment(
-                photon_count[0::2].sum(axis=0).astype(float),
-                photon_count[1::2].sum(axis=0).astype(float),
+                forward,
+                backward,
+                # photon_count[0::2].sum(axis=0).astype(float),
+                # photon_count[1::2].sum(axis=0).astype(float),
             )
             self._update_marker_visibility()
             self._update_readout_units()

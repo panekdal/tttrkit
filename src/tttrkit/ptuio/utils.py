@@ -65,13 +65,17 @@ def _skipped_line_parity(corrected_chunk: np.ndarray, config: ScanConfig, parity
     next chunk is correctly ignored there (each start marker begins exactly
     one line, regardless of where its matching stop falls).
     """
-    _, start_markers, _ = resolve_markers(
+    _, start_markers, stop_markers = resolve_markers(
         corrected_chunk,
         config.frame_start_marker_channel,
         config.line_start_marker_channel,
         config.line_stop_marker_channel,
     )
-    return 1 - ((parity + len(start_markers)) % 2)
+
+    print(f"Number of starts: {len(start_markers)}")
+    print(f"Number of stops: {len(stop_markers)}")
+    # return 1 - ((parity + len(start_markers)) % 2)
+    return ((parity + len(start_markers))) % 2
 
 
 def _read_probe_chunk(
@@ -98,6 +102,7 @@ def _read_probe_chunk(
         skipped_chunk = reader.read(count=chunk_length)
         corrected_skipped = corrector.correct(skipped_chunk)
         parity = _skipped_line_parity(corrected_skipped, config, parity)
+        print("Parity: ", parity)
         if verbose:
             print(f"Skipped chunk {i + 1}/{skip_chunks}")
 
@@ -178,13 +183,24 @@ def estimate_bidirectional_prealign(
     # over from the skipped region: scanning direction alternates plainly and
     # is not reset by a frame marker, so a break inside the probe chunk itself
     # doesn't change which local line is really forward.
-    start_line = parity
+    # start_line = 1-parity
     if len(ds.frame_break_line) > 0 and verbose:
         print(f"Warning: {len(ds.frame_break_line.values)} frame break(s) detected in the chunk.")
 
-    photon_count = ds.photon_count.isel(line=slice(start_line, n_lines)).values
-    forward = photon_count[0::2].sum(axis=0).astype(np.float64)
-    backward = photon_count[1::2].sum(axis=0).astype(np.float64)
+    # photon_count = ds.photon_count.isel(line=slice(start_line, n_lines)).values
+    photon_count = ds.photon_count.values[:n_lines]
+
+    n = len(photon_count) // 2
+    odd_line_sum = photon_count[0:2*n:2].sum(axis=0)
+    even_line_sum = photon_count[1:2*n:2].sum(axis=0)
+
+    if parity == 0:
+        forward = odd_line_sum
+        backward = even_line_sum
+    else:
+        forward = even_line_sum[::-1]
+        backward = odd_line_sum[::-1]
+
 
     if len(forward) == 0 or len(backward) == 0:
         raise ValueError(
