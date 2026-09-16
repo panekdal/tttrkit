@@ -105,7 +105,6 @@ def _read_probe_chunk(
     corrected_chunk = corrector.correct(chunk)
     return corrected_chunk, parity
 
-
 def estimate_bidirectional_prealign(
     reader: TTTRReader,
     cfg: ScanConfig,
@@ -116,7 +115,6 @@ def estimate_bidirectional_prealign(
     verbose = True,
 ) -> xr.Dataset:
     probe_config = copy.deepcopy(cfg)
-    # probe_config.bidirectional_phase_shift = 0.0
 
     corrected_chunk, parity = _read_probe_chunk(
         reader, cfg, wrap, chunk_length, skip_chunks, verbose
@@ -143,15 +141,12 @@ def estimate_bidirectional_prealign(
         print(f"Duty: {marker_timing.median_phase}")
 
     # add margins to the reconstructed lines duration
+    # ignore the input delays
     margin_nsync = int(np.median(pauses_nsync))
-    # margin_nsync = int(np.median(pauses_nsync)) + int(cfg.line_start_marker_delay * laser_sync_rate)
-    # margin_nsync -= int(cfg.line_stop_marker_delay * laser_sync_rate)
-
-    # margin_s = margin_fraction * margin_nsync / laser_sync_rate
 
     margin_s = margin_nsync / laser_sync_rate
-    probe_config.line_start_marker_delay += -margin_s /2
-    probe_config.line_stop_marker_delay += margin_s /2
+    probe_config.line_start_marker_delay = -margin_s /2 
+    probe_config.line_stop_marker_delay = margin_s /2
 
     window_nsync = margin_nsync + duration_nsync
 
@@ -163,9 +158,8 @@ def estimate_bidirectional_prealign(
 
     time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
 
-    # shift the time axis so it coincides with the un-delayed start markers
+    # shift the time axis so it coincides with the start marker(s)
     time_axis -= margin_s /2
-
 
     probe_chunk, parity = _read_probe_chunk(
         reader,
@@ -231,8 +225,6 @@ def estimate_bidirectional_prealign(
                 "paired_interval": np.arange(marker_timing.pair_count), 
                 },
     )
-
-
 
 def estimate_bidirectional_shift(
     reader: TTTRReader,
