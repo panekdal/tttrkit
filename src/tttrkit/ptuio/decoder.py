@@ -73,23 +73,28 @@ def resolve_markers(
     )
 
 
-def get_markers(events: np.ndarray, marker_mask: int) -> np.ndarray:
-    """Return marker events containing a configured physical marker input.
+# def get_markers(events: np.ndarray, marker_mask: int) -> np.ndarray:
+#     """Return marker events containing a configured physical marker input.
 
-    ``marker_mask`` is the bit value of one marker input (1, 2, 4, or 8).
-    A composite marker is retained whenever it contains that input; for
-    example, mask ``4`` matches both marker value ``4`` and value ``6``.
+#     ``marker_mask`` is the bit value of one marker input (1, 2, 4, or 8).
+#     A composite marker is retained whenever it contains that input; for
+#     example, mask ``4`` matches both marker value ``4`` and value ``6``.
 
-    This helper is intended for analysis. Reconstruction uses
-    :func:`resolve_markers` instead, because it validates marker roles across
-    the same event and rejects contradictory line-start/line-stop coincidences.
-    """
-    if not isinstance(marker_mask, (int, np.integer)) or marker_mask <= 0:
-        raise ValueError("marker_mask must be a positive integer")
+#     This helper is intended for analysis. Reconstruction uses
+#     :func:`resolve_markers` instead, because it validates marker roles across
+#     the same event and rejects contradictory line-start/line-stop coincidences.
+#     """
+#     if not isinstance(marker_mask, (int, np.integer)) or marker_mask <= 0:
+#         raise ValueError("marker_mask must be a positive integer")
 
-    is_marker = (events["special"] != 0) & (events["channel"] < 63)
-    contains_marker = (events["channel"] & marker_mask) != 0
-    return events[is_marker & contains_marker]
+#     is_marker = (events["special"] != 0) & (events["channel"] < 63)
+#     contains_marker = (events["channel"] & marker_mask) != 0
+#     return events[is_marker & contains_marker]
+
+
+def marker_events(events: np.ndarray) -> np.ndarray:
+    """Return only events where channel == 63 and special != 15 (non-overflow markers)."""
+    return events[(events["channel"] < 63) & (events["special"] != 0)]
 
 
 def decode_t3(records):

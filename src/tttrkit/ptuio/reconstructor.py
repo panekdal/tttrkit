@@ -3,7 +3,7 @@ import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
 
-from .decoder import event_dtype, get_markers, get_photons, resolve_markers
+from .decoder import event_dtype, get_photons, resolve_markers
 from .marker_timing import analyze_stop_marker_timing
 
 segment_dtype = [
