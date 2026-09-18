@@ -152,9 +152,9 @@ def estimate_bidirectional_prealign(
     # ignore the input delays
     margin_nsync = int(np.median(pauses_nsync))
 
-    margin_s = margin_nsync / laser_sync_rate
-    probe_config.line_start_marker_delay = -margin_s /2 
-    probe_config.line_stop_marker_delay = margin_s /2
+    # margin_s = margin_nsync / laser_sync_rate
+    probe_config.line_start_marker_delay = -margin_nsync /2 
+    probe_config.line_stop_marker_delay = margin_nsync /2
 
     window_nsync = margin_nsync + duration_nsync
 
@@ -167,7 +167,7 @@ def estimate_bidirectional_prealign(
     time_axis = pixel * single_pixel_duration_nsync / laser_sync_rate
 
     # shift the time axis so it coincides with the start marker(s)
-    time_axis -= margin_s / 2
+    time_axis -= margin_nsync / laser_sync_rate / 2
     
     probe_chunk, parity = _read_probe_chunk(
         reader,
@@ -250,7 +250,7 @@ def estimate_bidirectional_shift(
     config: ScanConfig,
     laser_sync_rate: float,
     wrap: int = 1024,
-    max_shift: float = 5e-6, # in seconds
+    max_shift: int = 500, # in nsync
     steps: int = 11,
     chunk_length: int = 500_000,
     skip_chunks: int = 0,
@@ -287,10 +287,22 @@ def estimate_bidirectional_shift(
     if verbose:
         print("Estimating bidirectional phase shift...")
 
+    # shifts = np.linspace(
+    #     - max_shift,
+    #     + max_shift,
+    #     steps,
+    # )
+
+    
+    n_intervals = round((2 * max_shift) / (steps - 1))
+
+    steps_adjusted = (2 * max_shift) // n_intervals + 1
+
     shifts = np.linspace(
-        - max_shift,
-        + max_shift,
-        steps,
+        -max_shift,
+        +max_shift,
+        steps_adjusted,
+        dtype=int,
     )
 
     scores = np.zeros_like(shifts)
@@ -332,7 +344,7 @@ def estimate_bidirectional_shift(
         if len(fwd_vals) == 0:
             scores[i] = 0.0
             if verbose:
-                print(f"Shift {shift:.2f} μs → no usable line pairs")
+                print(f"Shift {shift / laser_sync_rate * 1e6:.2f} μs → no usable line pairs")
             continue
 
         # Subtract mean along each line (axis=1)
@@ -345,25 +357,25 @@ def estimate_bidirectional_shift(
         scores[i] = score
 
         if verbose:
-            print(f"Shift {1e6 * shift:.2f} μs → score {score:.2f}")
+            print(f"Shift {shift / laser_sync_rate * 1e6:.2f} μs → score {score:.2f}")
 
-    shifts = shifts * 1e6  # scale up otherwise it fails
+    # shifts = shifts * 1e6  # scale up otherwise it fails
     fit_result = _fit_gaussian_peak(shifts, scores)
     if fit_result is None:
         best_shift = float(shifts[np.argmax(scores)])
+        # best_shift = shifts[np.argmax(scores)]
         fit_shifts = np.full_like(scores, np.nan)
         fit = np.full_like(scores, np.nan)
     else:
         best_shift, fit_shifts, fit = fit_result
-
+        best_shift = int(np.round(best_shift).item())
     # scale back to seconds
-    best_shift = best_shift * 1e-6
-    shifts = shifts * 1e-6
-    fit_shifts = fit_shifts * 1e-6
-
+    # best_shift = best_shift * 1e-6
+    # shifts = shifts * 1e-6
+    # fit_shifts = fit_shifts * 1e-6
 
     if verbose:
-        print(f"Best estimated shift: {1e6 * best_shift:.3f} μs")
+        print(f"Best estimated shift: {best_shift / laser_sync_rate * 1e6:.3f} μs")
 
     return xr.Dataset(
         {
