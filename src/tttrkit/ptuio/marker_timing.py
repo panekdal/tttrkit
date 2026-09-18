@@ -115,7 +115,7 @@ def compute_line_duration(
     frame_nsyncs,
     start_nsyncs,
     stop_nsyncs,
-    default_phase=0.80,
+    default_phase: float = 0.80,
 ):
     timing = analyze_stop_marker_timing(
         frame_nsyncs, start_nsyncs, stop_nsyncs

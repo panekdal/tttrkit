@@ -454,6 +454,9 @@ class MarkerAnalysisWidget(QWidget):
         self.setMinimumSize(640, 480)
         self._syncing = False
 
+        self.sync_rate = 0
+        self.wrap = 0
+
         self.file_path_edit = QLineEdit()
         self.file_path_edit.setPlaceholderText("Select a .ptu file")
         self.file_path_edit.setClearButtonEnabled(True)
@@ -665,12 +668,16 @@ class MarkerAnalysisWidget(QWidget):
         if file_path:
             self.file_path_edit.setText(file_path)
 
+            self.reader,self.sync_rate, self.wrap = self._open_reader(file_path)
+            
+
+
     def _build_config(self):
         return ScanConfig(
             bidirectional=True,
             pixels=self.pixels_input.value(),
-            line_start_marker_delay=self.start_marker_dly_input.value() * 1e-6,
-            line_stop_marker_delay=self.stop_marker_dly_input.value() * 1e-6,
+            line_start_marker_delay=int(self.start_marker_dly_input.value() * self.sync_rate * 1e-6),
+            line_stop_marker_delay=int(self.stop_marker_dly_input.value() * self.sync_rate * 1e-6),
         )
 
     def _begin_run(self, message):
@@ -704,16 +711,28 @@ class MarkerAnalysisWidget(QWidget):
         self._reset_readouts()
 
         try:
-            reader, sync_rate, wrap = self._open_reader(file_path)
+            # reader, sync_rate, wrap = self._open_reader(file_path)
+            # result = estimate_bidirectional_prealign(
+            #     reader=reader,
+            #     cfg=self._build_config(),
+            #     laser_sync_rate=sync_rate,
+            #     wrap=wrap,
+            #     chunk_length=self.chunk_size_input.value() * 1_000,
+            #     skip_chunks=self.skip_n_chunks_input.value(),
+            #     verbose=False,
+            # )
+
             result = estimate_bidirectional_prealign(
-                reader=reader,
+                reader=self.reader,
                 cfg=self._build_config(),
-                laser_sync_rate=sync_rate,
-                wrap=wrap,
+                laser_sync_rate=self.sync_rate,
+                wrap=self.wrap,
                 chunk_length=self.chunk_size_input.value() * 1_000,
                 skip_chunks=self.skip_n_chunks_input.value(),
                 verbose=False,
             )
+
+
             self.plot.set_result(result)
             self._update_marker_visibility()
             self._update_readout_units()
@@ -746,18 +765,28 @@ class MarkerAnalysisWidget(QWidget):
         self._reset_readouts()
 
         try:
-            reader, sync_rate, wrap = self._open_reader(file_path)
+            # reader, sync_rate, wrap = self._open_reader(file_path)
+            # config = self._build_config()
+            # corrected_chunk, parity = _read_probe_chunk(
+            #     reader,
+            #     config,
+            #     wrap,
+            #     self.chunk_size_input.value() * 1_000,
+            #     self.skip_n_chunks_input.value(),
+            #     False,
+            # )
+
             config = self._build_config()
             corrected_chunk, parity = _read_probe_chunk(
-                reader,
+                self.reader,
                 config,
-                wrap,
+                self.wrap,
                 self.chunk_size_input.value() * 1_000,
                 self.skip_n_chunks_input.value(),
                 False,
             )
 
-            segments = SegmentReconstructor(config, laser_sync_rate=sync_rate)
+            segments = SegmentReconstructor(config, laser_sync_rate=self.sync_rate)
             photon_count = segments.reconstruct(corrected_chunk).photon_count.values
             if len(photon_count) < 2:
                 raise ValueError(
@@ -807,21 +836,36 @@ class MarkerAnalysisWidget(QWidget):
         self.correlation_plot.clear()
 
         try:
-            reader, sync_rate, wrap = self._open_reader(file_path)
+            # reader, sync_rate, wrap = self._open_reader(file_path)
+            # result = estimate_bidirectional_shift(
+            #     reader=reader,
+            #     config=self._build_config(),
+            #     laser_sync_rate=sync_rate,
+            #     wrap=wrap,
+            #     max_shift=self.max_shift_input.value() * 1e-6,
+            #     steps=self.steps_input.value(),
+            #     chunk_length=self.chunk_size_input.value() * 1_000,
+            #     skip_chunks=self.skip_n_chunks_input.value(),
+            #     verbose=False,
+            # )
             result = estimate_bidirectional_shift(
-                reader=reader,
+                reader=self.reader,
                 config=self._build_config(),
-                laser_sync_rate=sync_rate,
-                wrap=wrap,
-                max_shift=self.max_shift_input.value() * 1e-6,
+                laser_sync_rate=self.sync_rate,
+                wrap=self.wrap,
+                max_shift=int(self.max_shift_input.value() * self.sync_rate * 1e-6),
                 steps=self.steps_input.value(),
                 chunk_length=self.chunk_size_input.value() * 1_000,
                 skip_chunks=self.skip_n_chunks_input.value(),
                 verbose=False,
             )
+               
+  
+
+
             self.correlation_plot.set_result(result)
 
-            best_shift_us = float(result["best_shift"].item()) * 1e6
+            best_shift_us = result["best_shift"].item() / self.sync_rate * 1e6
             if self.fix_shift_checkbox.isChecked():
                 self.shift_input.setValue(self.shift_input.value() + best_shift_us)
             else:
