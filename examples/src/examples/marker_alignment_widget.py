@@ -837,3 +837,11 @@ class MarkerAnalysisWidget(QWidget):
             self.label.setText(f"Optimization failed: {exc}")
         finally:
             self._end_run()
+
+if __name__ == "__main__":
+    from qtpy.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    widget = MarkerAnalysisWidget()
+    widget.show()
+    app.exec()

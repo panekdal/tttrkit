@@ -579,3 +579,11 @@ class TrackAnalysisWidget(QWidget):
             self.label.setText("Analysis complete.")
         except Exception as exc:
             self.label.setText(f"Analysis failed: {exc}")
+
+if __name__ == "__main__":
+    from qtpy.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    widget = TrackAnalysisWidget()
+    widget.show()
+    app.exec()
