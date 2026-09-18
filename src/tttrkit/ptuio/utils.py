@@ -364,8 +364,8 @@ def estimate_bidirectional_shift(
     if fit_result is None:
         best_shift = float(shifts[np.argmax(scores)])
         # best_shift = shifts[np.argmax(scores)]
-        fit_shifts = np.full_like(scores, np.nan)
-        fit = np.full_like(scores, np.nan)
+        fit_shifts = np.full_like(scores, np.nan, dtype=float)
+        fit = np.full_like(scores, np.nan, dtype=float)
     else:
         best_shift, fit_shifts, fit = fit_result
         best_shift = int(np.round(best_shift).item())
