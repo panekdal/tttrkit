@@ -4,7 +4,7 @@ import xarray as xr
 from numpy.typing import NDArray
 
 from .decoder import event_dtype, get_photons, resolve_markers
-from .marker_timing import analyze_stop_marker_timing
+from .marker_timing import analyze_stop_marker_timing, compute_line_duration
 
 segment_dtype = [
     ("start_nsync", "i8"),
@@ -40,8 +40,8 @@ def _build_line_windows(
     start = line_start_nsyncs.astype(np.int64, copy=True)
     stop = start + line_duration
 
-    start += int(line_start_marker_delay)
-    stop += int(line_stop_marker_delay)
+    start += line_start_marker_delay
+    stop += line_stop_marker_delay
     reversed_mask = bidirectional & (line_idx % 2 == 1)
 
     return start, stop, reversed_mask
@@ -144,6 +144,7 @@ class ScanConfig:
         laser_duty: float = 0.6, # used for harmonic correction
         line_start_marker_delay: int = 0, # in nsync units
         line_stop_marker_delay: int = 0,
+        line_duration: int | None = None,
     ):
         self.lines = lines
         self.pixels = pixels
@@ -153,7 +154,7 @@ class ScanConfig:
         self.laser_duty = laser_duty
         self.line_start_marker_delay = line_start_marker_delay
         self.line_stop_marker_delay = line_stop_marker_delay
-        
+        self.line_duration = line_duration
 
         # Normalize line_accumulations to tuple
         if isinstance(line_accumulations, int):
@@ -344,9 +345,10 @@ class ImageReconstructor:
  
         self._finished = False  # flag: stop processing when max frames reached
 
-        self.stop_marker_phase = None
-        self._stop_phase_computed = False
-        self.line_duration = 0
+        # self.stop_marker_phase = None
+        # self._stop_phase_computed = False
+        # self.line_duration = 0
+        # self.line_duration = 
 
         # ROI for masking
         self._roi_mask_stretched = None
@@ -380,10 +382,17 @@ class ImageReconstructor:
             # No line start markers → nothing to assemble this round
             return
 
-        if not self._stop_phase_computed:
-            self._compute_stop_phase(
+        # if not self._stop_phase_computed:
+        #     self._compute_stop_phase(
+        #         frame_markers["nsync"],
+        #         start_markers["nsync"], stop_markers["nsync"]
+        #     )
+
+        if self.config.line_duration is None:
+            _, self.config.line_duration = compute_line_duration(
                 frame_markers["nsync"],
-                start_markers["nsync"], stop_markers["nsync"]
+                start_markers["nsync"], 
+                stop_markers["nsync"],
             )
 
         line_segments = self._build_line_segments(frame_markers, start_markers)
@@ -608,7 +617,7 @@ class ImageReconstructor:
         self._partial_start_nsync = start_nsyncs[-1]
 
         start = start_nsyncs[:-1].astype(np.int64)
-        stop = start + self.line_duration
+        # stop = start + self.config.line_duration
 
         if len(start) == 0:
             return np.empty(0, dtype=segment_dtype)
@@ -625,7 +634,7 @@ class ImageReconstructor:
             return np.empty(0, dtype=segment_dtype)
 
         start = start[valid]
-        stop = stop[valid]
+        # stop = stop[valid]
         frame_idx = frame_idx[valid]
 
         # If bidirectional: even=forward, odd=reversed
@@ -645,7 +654,7 @@ class ImageReconstructor:
 
         start, stop, reversed_mask = _build_line_windows(
             start,
-            line_duration=self.line_duration,
+            line_duration=self.config.line_duration,
             line_idx=line_idx,
             bidirectional=self.config.bidirectional,
             line_start_marker_delay=self.config.line_start_marker_delay,
@@ -804,7 +813,7 @@ class ImageReconstructor:
     def _flush_final_line(self):
 
         final_start = np.array([self._partial_start_nsync], dtype=np.int64)
-        final_stop = final_start + self.line_duration
+        final_stop = final_start + self.config.line_duration
         final_reversed = np.array(
             [self.config.bidirectional and (self._current_line_idx % 2 == 1)],
             dtype=bool,
@@ -831,28 +840,28 @@ class ImageReconstructor:
         )
         self._partial_start_nsync = None
 
-    def _compute_stop_phase(
-        self,
-        frame_nsyncs: NDArray[np.uint64],
-        start_nsyncs: NDArray[np.uint64],
-        stop_nsyncs: NDArray[np.uint64],
-        default_phase: float = 0.80,
-    ) -> None:
-        timing = analyze_stop_marker_timing(
-            frame_nsyncs, start_nsyncs, stop_nsyncs
-        )
+    # def _compute_stop_phase(
+    #     self,
+    #     frame_nsyncs: NDArray[np.uint64],
+    #     start_nsyncs: NDArray[np.uint64],
+    #     stop_nsyncs: NDArray[np.uint64],
+    #     default_phase: float = 0.80,
+    # ) -> None:
+    #     timing = analyze_stop_marker_timing(
+    #         frame_nsyncs, start_nsyncs, stop_nsyncs
+    #     )
 
-        if timing.pair_count:
-            self.stop_marker_phase = timing.median_phase
-            self.line_duration = int(timing.median_duration)
-            self._stop_phase_computed = True
-        elif timing.median_interval is not None:
-            self.stop_marker_phase = default_phase
-            self.line_duration = int(timing.median_interval * default_phase)
-            self._stop_phase_computed = True
-        else:
-            self.stop_marker_phase = None
-            self.line_duration = 0
+    #     if timing.pair_count:
+    #         # self.stop_marker_phase = timing.median_phase
+    #         self.line_duration = int(timing.median_duration)
+    #         self._stop_phase_computed = True
+    #     elif timing.median_interval is not None:
+    #         # self.stop_marker_phase = default_phase
+    #         self.line_duration = int(timing.median_interval * default_phase)
+    #         self._stop_phase_computed = True
+    #     else:
+    #         # self.stop_marker_phase = None
+    #         self.line_duration = 0
 
 # TODO: add option to select marker channels and validation of marker chan
 
@@ -884,8 +893,8 @@ class SegmentReconstructor:
             raise TypeError("SegmentReconstructor requires a ScanConfig object")
         self.config = config
         self.laser_sync_rate = laser_sync_rate # not used for anything?
-        self.stop_marker_phase = None
-        self.line_duration = 0
+        # self.stop_marker_phase = None
+        # self.line_duration = 0
 
     def reconstruct(self, events: np.ndarray) -> xr.Dataset:
         """Process one chunk of events and return the reconstructed image.
@@ -916,12 +925,21 @@ class SegmentReconstructor:
             # Not enough line-start markers to bound a single complete line
             return self._empty_dataset()
 
-        self._compute_stop_phase(
-            frame_markers["nsync"],
-            start_markers["nsync"],
-            stop_markers["nsync"],
-        )
-        if self.line_duration <= 0:
+        # self._compute_stop_phase(
+        #     frame_markers["nsync"],
+        #     start_markers["nsync"],
+        #     stop_markers["nsync"],
+        # )
+
+        if self.config.line_duration is None:
+            _, self.config.line_duration = compute_line_duration(
+                frame_markers["nsync"],
+                start_markers["nsync"],
+                stop_markers["nsync"],
+            )
+
+
+        if self.config.line_duration <= 0:
             return self._empty_dataset()
 
         start, stop, line_idx, reversed_mask = self._build_segments(
@@ -978,26 +996,26 @@ class SegmentReconstructor:
             },
         )
 
-    def _compute_stop_phase(
-        self,
-        frame_nsyncs: NDArray[np.uint64],
-        start_nsyncs: NDArray[np.uint64],
-        stop_nsyncs: NDArray[np.uint64],
-        default_phase: float = 0.80,
-    ) -> None:
-        timing = analyze_stop_marker_timing(
-            frame_nsyncs, start_nsyncs, stop_nsyncs
-        )
+    # def _compute_stop_phase(
+    #     self,
+    #     frame_nsyncs: NDArray[np.uint64],
+    #     start_nsyncs: NDArray[np.uint64],
+    #     stop_nsyncs: NDArray[np.uint64],
+    #     default_phase: float = 0.80,
+    # ) -> None:
+    #     timing = analyze_stop_marker_timing(
+    #         frame_nsyncs, start_nsyncs, stop_nsyncs
+    #     )
 
-        if timing.pair_count:
-            self.stop_marker_phase = timing.median_phase
-            self.line_duration = int(timing.median_duration)
-        elif timing.median_interval is not None:
-            self.stop_marker_phase = default_phase
-            self.line_duration = int(timing.median_interval * default_phase)
-        else:
-            self.stop_marker_phase = None
-            self.line_duration = 0
+    #     if timing.pair_count:
+    #         # self.stop_marker_phase = timing.median_phase
+    #         self.line_duration = int(timing.median_duration)
+    #     elif timing.median_interval is not None:
+    #         # self.stop_marker_phase = default_phase
+    #         self.line_duration = int(timing.median_interval * default_phase)
+    #     else:
+    #         # self.stop_marker_phase = None
+    #         self.line_duration = 0
 
     def _build_segments(
         self, start_nsyncs: NDArray[np.uint64]
@@ -1005,7 +1023,7 @@ class SegmentReconstructor:
         line_idx = np.arange(len(start_nsyncs) - 1, dtype=np.int64)
         start, stop, reversed_mask = _build_line_windows(
             start_nsyncs[:-1],
-            line_duration=self.line_duration,
+            line_duration=self.config.line_duration,
             line_idx=line_idx,
             bidirectional=self.config.bidirectional,
             line_start_marker_delay=self.config.line_start_marker_delay,

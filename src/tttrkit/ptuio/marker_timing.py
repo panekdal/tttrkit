@@ -110,3 +110,21 @@ def analyze_stop_marker_timing(
         median_interval=float(np.median(intervals)),
         window=(lower, upper),
     )
+
+def compute_line_duration(
+    frame_nsyncs,
+    start_nsyncs,
+    stop_nsyncs,
+    default_phase=0.80,
+):
+    timing = analyze_stop_marker_timing(
+        frame_nsyncs, start_nsyncs, stop_nsyncs
+    )
+
+    if timing.pair_count:
+        return timing.median_phase, int(timing.median_duration)
+
+    if timing.median_interval is not None:
+        return default_phase, int(timing.median_interval * default_phase)
+
+    return None, None

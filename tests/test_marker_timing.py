@@ -1,6 +1,6 @@
 import numpy as np
 
-from tttrkit.ptuio import analyze_stop_marker_timing
+from tttrkit.ptuio.marker_timing import analyze_stop_marker_timing
 from tttrkit.ptuio.reconstructor import (
     ImageReconstructor,
     ScanConfig,

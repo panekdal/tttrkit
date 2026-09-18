@@ -9,9 +9,8 @@ def test_build_line_windows_applies_delays_and_bidirectional_flags():
         line_duration=80,
         line_idx=np.array([0, 1, 2], dtype=np.int64),
         bidirectional=True,
-        line_start_marker_delay=0.1,
-        line_stop_marker_delay=-0.05,
-        laser_sync_rate=100.0,
+        line_start_marker_delay=100,
+        line_stop_marker_delay=-500,
     )
 
     np.testing.assert_array_equal(start, [110, 210, 310])

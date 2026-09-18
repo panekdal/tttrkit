@@ -153,8 +153,8 @@ def estimate_bidirectional_prealign(
     margin_nsync = int(np.median(pauses_nsync))
 
     # margin_s = margin_nsync / laser_sync_rate
-    probe_config.line_start_marker_delay = -margin_nsync /2 
-    probe_config.line_stop_marker_delay = margin_nsync /2
+    probe_config.line_start_marker_delay = -int(margin_nsync /2 )
+    probe_config.line_stop_marker_delay = int(margin_nsync /2)
 
     window_nsync = margin_nsync + duration_nsync
 
