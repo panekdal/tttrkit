@@ -4,7 +4,7 @@ import xarray as xr
 from numpy.typing import NDArray
 
 from .decoder import event_dtype, get_photons, resolve_markers
-from .marker_timing import analyze_stop_marker_timing, compute_line_duration
+from .marker_timing import compute_line_duration
 
 segment_dtype = [
     ("start_nsync", "i8"),
@@ -191,29 +191,37 @@ class ScanConfig:
             "lines": self.lines,
             "pixels": self.pixels,
             "frames": self.frames,
+            "max_detector": self.max_detector,
             "line_accumulations": self.line_accumulations,
             "bidirectional": self.bidirectional,
-            "frame_start_marker": self.frame_start_marker_channel,
-            "line_start_marker": self.line_start_marker_channel,
-            "line_stop_marker": self.line_stop_marker_channel,
+            "frame_start_marker_channel": self.frame_start_marker_channel,
+            "line_start_marker_channel": self.line_start_marker_channel,
+            "line_stop_marker_channel": self.line_stop_marker_channel,
             "harmonic_scan": self.harmonic_scan,
             "laser_duty": self.laser_duty,
+            "line_start_marker_delay": self.line_start_marker_delay,
+            "line_stop_marker_delay": self.line_stop_marker_delay,
+            "harmonic_scan": self.harmonic_scan,
+            "line_duration": self.line_duration,
         }
 
-    # TODO modify for number of sequences
     @classmethod
-    def from_dict(cls, d):
+    def from_dict(cls, data):
         return cls(
-            lines=d["lines"],
-            pixels=d["pixels"],
-            frames=d["frames"],
-            line_accumulations=d.get("line_accumulations", (1,)),
-            bidirectional=d.get("bidirectional", False),
-            frame_start_marker_channel=d.get("frame_start_marker", 4),
-            line_start_marker_channel=d.get("line_start_marker", 1),
-            line_stop_marker_channel=d.get("line_stop_marker", 2),
-            harmonic_scan=d.get("harmonic_scan", False),
-            laser_duty=d.get("laser_duty", 0.0),
+            lines=data.get("lines", 512),
+            pixels=data.get("pixels", 512),
+            frames=data.get("frames", 1),
+            max_detector=data.get("max_detector", 64),
+            line_accumulations=data.get("line_accumulations", (1,)),
+            bidirectional=data.get("bidirectional", False),
+            frame_start_marker_channel=data.get("frame_start_marker_channel", 4),
+            line_start_marker_channel=data.get("line_start_marker_channel", 1),
+            line_stop_marker_channel=data.get("line_stop_marker_channel", 2),
+            harmonic_scan=data.get("harmonic_scan", False),
+            laser_duty=data.get("laser_duty", 0.6),
+            line_start_marker_delay=data.get("line_start_marker_delay", 0),
+            line_stop_marker_delay=data.get("line_stop_marker_delay", 0),
+            line_duration=data.get("line_duration", None),
         )
 
     def __repr__(self):
