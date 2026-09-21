@@ -489,7 +489,7 @@ def _format_marker_suggestions(analysis_results: dict) -> str:
 #         lines.append(f"  {k:<12}{v:<12}")
 
 #     lines.append("\n=== RESOLVED MARKERS ===")
-    lines.append(f"{'  Frame starts:':<15} {analysis_results["frame_count"]:<2}")
+    # lines.append(f"{'  Frame starts:':<15} {analysis_results["frame_count"]:<2}")
 #     lines.append(f"{'  Line starts:':<15} {analysis_results["line_start_count"]:<2}")
 #     lines.append(f"{'  Line stops:':<15} {analysis_results["line_stop_count"]:<2}")
 
