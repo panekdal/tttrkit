@@ -454,23 +454,52 @@ def get_marker_numbers(
 def _format_marker_suggestions(analysis_results: dict) -> str:
     lines = []
     lines.append("\n=== ALL MARKER EVENTS ===")
-    lines.append(f"{'  Channel':<12}{'Events detected':<12} ")
+    lines.append(f"{'  Channel':<12}{'Events detected':<12}")
     lines.append("-" * 34)
+
     for k, v in analysis_results["raw_marker_distribution"].items():
         lines.append(f"  {k:<12}{v:<12}")
 
     lines.append("\n=== RESOLVED MARKERS ===")
-    lines.append(f"{'  Frame starts:':<15} {analysis_results["frame_count"]:<2}")
-    lines.append(f"{'  Line starts:':<15} {analysis_results["line_start_count"]:<2}")
-    lines.append(f"{'  Line stops:':<15} {analysis_results["line_stop_count"]:<2}")
+    lines.append(
+        f"{'  Frame starts:':<15} {analysis_results['frame_count']:<2}"
+    )
+    lines.append(
+        f"{'  Line starts:':<15} {analysis_results['line_start_count']:<2}"
+    )
+    lines.append(
+        f"{'  Line stops:':<15} {analysis_results['line_stop_count']:<2}"
+    )
 
     lines.append("\n=== POSSIBLE COMBINATIONS ===")
-    lines.append(f"{'  Lines':<12}{'Accumulations':<12} ")
+    lines.append(f"{'  Lines':<12}{'Accumulations':<12}")
     lines.append("-" * 34)
+
     for k, v in analysis_results["suggested_combinations"]:
         lines.append(f"  {k:<12}{v:<12}")
 
     return "\n".join(lines)
+
+# def _format_marker_suggestions(analysis_results: dict) -> str:
+#     lines = []
+#     lines.append("\n=== ALL MARKER EVENTS ===")
+#     lines.append(f"{'  Channel':<12}{'Events detected':<12} ")
+#     lines.append("-" * 34)
+#     for k, v in analysis_results["raw_marker_distribution"].items():
+#         lines.append(f"  {k:<12}{v:<12}")
+
+#     lines.append("\n=== RESOLVED MARKERS ===")
+    lines.append(f"{'  Frame starts:':<15} {analysis_results["frame_count"]:<2}")
+#     lines.append(f"{'  Line starts:':<15} {analysis_results["line_start_count"]:<2}")
+#     lines.append(f"{'  Line stops:':<15} {analysis_results["line_stop_count"]:<2}")
+
+#     lines.append("\n=== POSSIBLE COMBINATIONS ===")
+#     lines.append(f"{'  Lines':<12}{'Accumulations':<12} ")
+#     lines.append("-" * 34)
+#     for k, v in analysis_results["suggested_combinations"]:
+#         lines.append(f"  {k:<12}{v:<12}")
+
+#     return "\n".join(lines)
 
 
 # Backward-compatible imports for existing notebooks and user code.
