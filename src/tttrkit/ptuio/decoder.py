@@ -118,22 +118,31 @@ def decode_t3(records):
 class T3OverflowCorrector:
     def __init__(self, wraparound=1024):
         self.wraparound = wraparound
-        self.overflow_carry = 0  # Total number of wraparound events so far
+        self.overflow_carry = 0
 
     def correct(self, records: np.ndarray) -> np.ndarray:
         decoded = decode_t3(records)
 
-        is_overflow = (decoded["special"] == 1) & (decoded["channel"] == 0x3F)
+        is_overflow = (
+            (decoded["special"] == 1)
+            & (decoded["channel"] == 0x3F)
+        )
+
+        # In Generic T3, nsync=0 encodes one overflow period.
+        overflow_count = np.where(
+            is_overflow,
+            np.where(decoded["nsync"] == 0, 1, decoded["nsync"]),
+            0,
+        )
+
         overflow_correction = (
-            np.cumsum(is_overflow * decoded["nsync"]) * self.wraparound
+            np.cumsum(overflow_count, dtype=np.uint64) * self.wraparound
         )
         overflow_total = overflow_correction + self.overflow_carry
 
-        # Apply correction to *all* events
         decoded["nsync"] += overflow_total
 
-        # Update carry for next chunk
-        if len(overflow_correction) > 0:
+        if len(overflow_total):
             self.overflow_carry = overflow_total[-1]
 
         return decoded
