@@ -1,8 +1,10 @@
 """Visualization helpers for FLIM analysis results."""
 
 import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.axes import Axes
+
 
 
 def create_FLIM_image(
@@ -133,4 +135,69 @@ def draw_unitary_circle(
 
     # Clean formatting
     ax.set_aspect('equal', adjustable = 'datalim')
+
+import matplotlib.pyplot as plt
+
+import matplotlib.pyplot as plt
+
+
+import matplotlib.pyplot as plt
+
+
+def plot_decay(dec_list, labels, tm=None, title=None):
+    assert len(dec_list) == len(
+        labels
+    ), f"Mismatch between number of decays ({len(dec_list)}) and labels ({len(labels)})"
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    # Check if a custom time axis is provided per decay curve
+    has_multiple_tm = isinstance(tm, (list, tuple)) and len(tm) > 0 and hasattr(tm[0], "__len__")
+
+    if has_multiple_tm:
+        assert len(tm) == len(
+            dec_list
+        ), f"Mismatch between number of time arrays ({len(tm)}) and decays ({len(dec_list)})"
+
+    for i, (dec, label) in enumerate(zip(dec_list, labels)):
+        # Determine appropriate x-axis data for this specific curve
+        if tm is None:
+            x_data = range(len(dec))
+        elif has_multiple_tm:
+            x_data = tm[i]
+        else:
+            x_data = tm
+
+        ax.semilogy(
+            x_data,
+            dec,
+            linestyle="",
+            marker=".",
+            markersize=2,
+            label=label,
+        )
+
+    ax.set_xlabel("time (ns)" if tm is not None else "index")
+    ax.set_ylabel("counts")
+    if title:
+        ax.set_title(title)
+
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+def plot_decay_fit(tm,dec,fit,res,limits,title=None):
+    tm_fit = tm[limits[0]:limits[-1]]
+    fig,ax = plt.subplots(2,1,figsize = (6,5),height_ratios=[4,1])
+    ax[0].semilogy(tm,dec, color = 'blue',linestyle='',marker ='.',markersize=2)
+    ax[0].semilogy(tm_fit, fit, color = 'red')
+    ax[0].set_ylabel('counts')
+    ax[0].set_xticklabels('')
+
+    ax[1].plot(tm_fit,res, color = 'blue',linestyle='-',linewidth=.75,marker ='')
+    ax[1].set_xlim(ax[0].get_xlim())
+    ax[1].set_xlabel('time (ns)')
+
+ 
+    plt.show()
 
