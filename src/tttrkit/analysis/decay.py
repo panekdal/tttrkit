@@ -858,12 +858,15 @@ def fit_decay_reconvolution(
 
     # Calculate weighted residuals
     valid = n > 0
-    weights = 1 / np.sqrt(n[valid])
+    weights = np.zeros_like(n)
+    # weights = 1 / np.sqrt(n[valid])
+    weights[valid] = 1 / np.sqrt(n[valid])
     residuals = (n - mu_fit) * weights
 
     return {
         "fit_parameters": fitted, 
-        "fit": mu_fit, 
+        "fit": mu_fit,
+        "limits": fit_limits_channels, 
         "residuals":residuals,
         "optimizer_result":result
     }
@@ -1237,8 +1240,13 @@ def fit_decay_tail(
     residuals = (n - mu_fit) * weights
 
 
-    return fitted, mu_fit, residuals, result
-
+    return {
+        "fit_parameters": fitted, 
+        "fit": mu_fit,
+        "limits": fit_limits_channels, 
+        "residuals":residuals,
+        "optimizer_result":result
+    }
 
 from dataclasses import dataclass
 import numpy as np
