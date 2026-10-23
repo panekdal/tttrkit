@@ -4,13 +4,13 @@ import numpy as np
 from scipy.signal import convolve2d
 
 
-def smooth_phasor(phasor, count, size: int = 3):
+def smooth_phasor(phasor, photon_count, size: int = 3):
     kernel = np.ones((size, size), dtype=np.float32)
-    valid = np.isfinite(phasor) & (count > 0)
+    valid = np.isfinite(phasor) & (photon_count > 0)
     phasor_weighted = np.zeros_like(phasor, dtype=np.complex64)
-    phasor_weighted[valid] = phasor[valid] * count[valid]
-    count_weighted = np.zeros_like(count, dtype=np.float32)
-    count_weighted[valid] = count[valid]
+    phasor_weighted[valid] = phasor[valid] * photon_count[valid]
+    count_weighted = np.zeros_like(photon_count, dtype=np.float32)
+    count_weighted[valid] = photon_count[valid]
     num = convolve2d(
         phasor_weighted.real, kernel, mode="same"
     ) + 1j * convolve2d(phasor_weighted.imag, kernel, mode="same")
