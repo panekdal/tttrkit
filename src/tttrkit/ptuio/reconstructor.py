@@ -29,8 +29,20 @@ FRAME_SYNC_MODES = ("count", "validate", "resync")
 LINE_DURATION_ESTIMATE_LINES = 128
 
 
-class FrameSyncWarning(UserWarning):
+class DataQualityWarning(UserWarning):
+    """The data and the configuration disagree enough to lose information."""
+
+
+class FrameSyncWarning(DataQualityWarning):
     """Frame markers disagree with the line count implied by ScanConfig."""
+
+
+# Discarded fractions above which a DataQualityWarning is issued. Below
+# them, discarded photons and markers are typically corrupted records
+# (impossible dtime or detector values, coincident marker glitches) and are
+# only counted, in the attrs of the reconstructed Dataset.
+PHOTON_DISCARD_WARN_FRACTION = 1e-3  # of photons inside line windows
+MARKER_DISCARD_WARN_FRACTION = 1e-2  # of all marker events
 
 
 def _build_line_windows(
@@ -434,6 +446,15 @@ class ImageReconstructor:
 
         self._finished = False  # flag: stop processing when max frames reached
 
+        # Data-quality accounting, reported in the Dataset attrs and, above
+        # the thresholds, as DataQualityWarning
+        self._photons_in_lines = 0  # photons inside a line window
+        self._tcspc_overflow = 0  # ... discarded: dtime >= tcspc_channels
+        self._detector_overflow = np.zeros(64, dtype=np.int64)  # by channel
+        self._markers_total = 0
+        self._markers_unconfigured = {}  # marker value -> count
+        self._data_beyond_frames = False
+
         # ROI for masking
         self._roi_mask_stretched = None
         if roi_mask is not None:
@@ -463,6 +484,7 @@ class ImageReconstructor:
         if len(events) == 0:
             return
         last_nsync = int(events["nsync"][-1])
+        self._count_markers(events)
         if len(self._pending_photons) > 0:
             events = np.concatenate([self._pending_photons, events])
             self._pending_photons = np.empty((0,), dtype=events.dtype)
@@ -484,6 +506,24 @@ class ImageReconstructor:
         carry = self._carry_mask(photons["nsync"], last_nsync)
         self._pending_photons = photons[carry]
         self._assign_photons_to_segments(photons[~carry], line_segments)
+
+    def _count_markers(self, events: np.ndarray) -> None:
+        """Count markers, and those resolve_markers discards as glitches."""
+        channels = events["channel"][
+            (events["special"] != 0) & (events["channel"] < 16)
+        ]
+        self._markers_total += len(channels)
+        configured = (
+            self.config.frame_start_marker_channel
+            | self.config.line_start_marker_channel
+            | self.config.line_stop_marker_channel
+        )
+        unconfigured_bits = np.uint8(0xFF ^ configured)
+        values, counts = np.unique(
+            channels[(channels & unconfigured_bits) != 0], return_counts=True
+        )
+        for v, n in zip(values.tolist(), counts.tolist()):
+            self._markers_unconfigured[v] = self._markers_unconfigured.get(v, 0) + n
 
     def _resolve_markers(self, events: np.ndarray):
         return resolve_markers(
@@ -521,6 +561,7 @@ class ImageReconstructor:
             warnings.warn(
                 f"Line duration could not be estimated from "
                 f"{len(starts)} line start marker(s); no photons are binned.",
+                DataQualityWarning,
                 stacklevel=3,
             )
             duration = 0
@@ -702,7 +743,70 @@ class ImageReconstructor:
 
         print("Reconstruction finished.")
 
-        return xr.Dataset(data, coords=coords)
+        return xr.Dataset(data, coords=coords, attrs=self._data_quality())
+
+    def _data_quality(self) -> dict:
+        """Warn about significant losses; return counts for Dataset.attrs.
+
+        Attrs (plain integers, so the Dataset stays serialisable):
+            photons_in_lines            photons inside a line window
+            photons_discarded_tcspc     ... of which dtime >= tcspc_channels
+            photons_discarded_detector  ... of which channel >= max_detector
+            markers_total               marker events read
+            markers_discarded           ... combining configured and
+                                        unconfigured inputs (glitches)
+            frame_markers_off_boundary  frame markers not on a frame boundary
+            data_beyond_frames          1 if line starts followed the last
+                                        configured frame (reading stopped)
+        """
+        in_lines = self._photons_in_lines
+        tcspc = self._tcspc_overflow
+        detector = int(self._detector_overflow.sum())
+        unconfigured = sum(self._markers_unconfigured.values())
+
+        if in_lines and tcspc > PHOTON_DISCARD_WARN_FRACTION * in_lines:
+            warnings.warn(
+                f"{tcspc} of {in_lines} photons ({tcspc / in_lines:.2%}) have "
+                f"a TCSPC channel >= tcspc_channels={self.tcspc_channels} and "
+                f"were discarded; tcspc_channels is likely too small.",
+                DataQualityWarning,
+                stacklevel=3,
+            )
+        busy = {
+            int(ch): int(n)
+            for ch, n in enumerate(self._detector_overflow)
+            if n > PHOTON_DISCARD_WARN_FRACTION * in_lines
+        }
+        if in_lines and busy:
+            warnings.warn(
+                f"Detector channel(s) {busy} (photons) are >= "
+                f"max_detector={self.config.max_detector} and were "
+                f"discarded; max_detector is likely too small.",
+                DataQualityWarning,
+                stacklevel=3,
+            )
+        if unconfigured > MARKER_DISCARD_WARN_FRACTION * self._markers_total:
+            warnings.warn(
+                f"{unconfigured} of {self._markers_total} markers combine a "
+                f"configured input with an unconfigured one "
+                f"{dict(sorted(self._markers_unconfigured.items()))} "
+                f"(value: count) and were discarded; check the marker "
+                f"channels in ScanConfig.",
+                DataQualityWarning,
+                stacklevel=3,
+            )
+
+        return {
+            "photons_in_lines": in_lines,
+            "photons_discarded_tcspc": tcspc,
+            "photons_discarded_detector": detector,
+            "markers_total": self._markers_total,
+            "markers_discarded": unconfigured,
+            "frame_markers_off_boundary": sum(
+                e["action"] != "ok" for e in self.frame_sync_events
+            ),
+            "data_beyond_frames": int(self._data_beyond_frames),
+        }
 
     def _resolve_dependencies(self):
         required = set()
@@ -779,6 +883,7 @@ class ImageReconstructor:
         if len(segments) and segments["frame_idx"][-1] >= self.config.frames:
             # Frame index never decreases: every later line is out of range too
             self._finished = True
+            self._data_beyond_frames = True
         return segments[segments["frame_idx"] < self.config.frames]
 
     def _make_segments(
@@ -964,23 +1069,24 @@ class ImageReconstructor:
             np.searchsorted(segment_starts, photons["nsync"], side="right") - 1
         )
 
-        if photons["dtime"].max() >= self.tcspc_channels:
-            print(
-                f"\033[91mWarning: TCSPC channel overflow detected. Max channel: {photons['dtime'].max()}\033[0m"
-            )
-
-        if photons["channel"].max() >= self.config.max_detector:
-            print(
-                f"\033[91mWarning: Channel overflow detected. Max channel: {photons['channel'].max()}\033[0m"
-            )
-
-        valid = (
-            (segment_index >= 0)
-            & (segment_index < len(segment_starts))
-            & (photons["nsync"] < segment_ends[segment_index])
-            & (photons["dtime"] < self.tcspc_channels)
-            & (photons["channel"] < self.config.max_detector)
+        in_line = (segment_index >= 0) & (segment_index < len(segment_starts))
+        in_line[in_line] &= (
+            photons["nsync"][in_line] < segment_ends[segment_index[in_line]]
         )
+        # Photons in a line window that cannot be binned are counted, so
+        # that losses are reported once at finalize
+        tcspc_overflow = in_line & (photons["dtime"] >= self.tcspc_channels)
+        detector_overflow = in_line & (
+            photons["channel"] >= self.config.max_detector
+        )
+        self._photons_in_lines += int(np.count_nonzero(in_line))
+        self._tcspc_overflow += int(np.count_nonzero(tcspc_overflow))
+        if detector_overflow.any():
+            self._detector_overflow += np.bincount(
+                photons["channel"][detector_overflow], minlength=64
+            )[:64]
+
+        valid = in_line & ~tcspc_overflow & ~detector_overflow
 
         if np.count_nonzero(valid) == 0:
             return

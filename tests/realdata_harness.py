@@ -283,6 +283,7 @@ def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -
             for a in sorted({e["action"] for e in events})
         },
         # informational only, not compared
+        "data_quality": {k: int(v) for k, v in ds.attrs.items()},
         "frame_sync_mismatches": [int(e["mismatch"]) for e in events if e["mismatch"]],
         "warnings": [f"{w.category.__name__}: {w.message}"[:300] for w in caught],
         "printed": [p[:300] for p in printed],
