@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+import warnings
 import numpy as np
 import xarray as xr
 from numpy.typing import NDArray
@@ -20,6 +21,16 @@ AVAILABLE_OUTPUTS = [
     "phasor",
     "tcspc_histogram",
 ]
+
+FRAME_SYNC_MODES = ("count", "validate", "resync")
+
+# Lines used to estimate the line duration when ScanConfig.line_duration is
+# None. Fixed, so that the estimate does not depend on the chunk size.
+LINE_DURATION_ESTIMATE_LINES = 128
+
+
+class FrameSyncWarning(UserWarning):
+    """Frame markers disagree with the line count implied by ScanConfig."""
 
 
 def _build_line_windows(
@@ -118,13 +129,41 @@ def _phase_to_pixels(
 class ScanConfig:
     """Configuration for image reconstruction.
 
-    ``line_start_marker_delay`` and ``line_stop_marker_delay`` are
-    dimensionless fractions of the inferred line duration. A positive start
-    delay begins accepting photons later, while a negative value begins
-    earlier. A positive stop delay accepts photons farther toward the next
-    line, while a negative value ends acceptance earlier. If the two delays
-    differ, the reconstructed line is effectively stretched or compressed in
-    phase.
+    ``line_start_marker_delay`` and ``line_stop_marker_delay`` are in nsync
+    (laser sync) units. A positive start delay begins accepting photons
+    later, while a negative value begins earlier. A positive stop delay
+    accepts photons farther toward the next line, while a negative value ends
+    acceptance earlier. If the two delays differ, the reconstructed line is
+    effectively stretched or compressed in phase.
+
+    ``line_duration`` (nsync units) is the photon-acceptance window of a line
+    before delays are applied. If None, ImageReconstructor estimates it from
+    the first ``LINE_DURATION_ESTIMATE_LINES`` lines of the stream.
+
+    Frame assignment:
+        Lines are assigned to frames by counting line start markers: line k
+        belongs to frame k // lines_per_frame, where
+        lines_per_frame = lines * sum(line_accumulations). The configuration
+        is the source of truth; frame markers are redundancy used according
+        to ``frame_sync``:
+
+        "count": frame markers are ignored.
+        "validate": frame markers are checked against the line count and a
+            FrameSyncWarning is issued when one is off a frame boundary. The
+            reconstruction is not altered.
+        "resync" (default): like "validate", but a frame marker that is off
+            a frame boundary by at most
+            max(1, frame_sync_tolerance * lines_per_frame) lines realigns the
+            line count, so that the next line starts a new frame. A dropped
+            or spurious line marker then affects only the frame it occurs in.
+            Lines that overran the previous frame (spurious line markers) are
+            discarded. Markers further off are treated as spurious and
+            ignored.
+
+        The check works whether the hardware emits the frame marker before
+        the first line of a frame (e.g. Abberior, Zeiss) or after the last
+        one (e.g. Leica SP8): either way, the number of line starts preceding
+        the marker is a multiple of lines_per_frame.
     """
 
     def __init__(
@@ -145,7 +184,17 @@ class ScanConfig:
         line_start_marker_delay: int = 0, # in nsync units
         line_stop_marker_delay: int = 0,
         line_duration: int | None = None,
+        frame_sync: str = "resync",  # "count", "validate" or "resync"
+        frame_sync_tolerance: float = 0.1,  # fraction of lines_per_frame
     ):
+        if frame_sync not in FRAME_SYNC_MODES:
+            raise ValueError(
+                f"frame_sync must be one of {FRAME_SYNC_MODES}, got {frame_sync!r}"
+            )
+        if not 0 < frame_sync_tolerance < 0.5:
+            raise ValueError("frame_sync_tolerance must be in (0, 0.5)")
+        self.frame_sync = frame_sync
+        self.frame_sync_tolerance = frame_sync_tolerance
         self.lines = lines
         self.pixels = pixels
         self.frames = frames
@@ -185,6 +234,10 @@ class ScanConfig:
             raise ValueError(f"{name} must be one of 1, 2, 4, or 8")
         return int(marker_mask)
 
+    @property
+    def lines_per_frame(self) -> int:
+        """Number of line start markers per frame (lines x accumulations)."""
+        return self.lines * self._total_accumulations
 
     def to_dict(self):
         return {
@@ -201,8 +254,9 @@ class ScanConfig:
             "laser_duty": self.laser_duty,
             "line_start_marker_delay": self.line_start_marker_delay,
             "line_stop_marker_delay": self.line_stop_marker_delay,
-            "harmonic_scan": self.harmonic_scan,
             "line_duration": self.line_duration,
+            "frame_sync": self.frame_sync,
+            "frame_sync_tolerance": self.frame_sync_tolerance,
         }
 
     @classmethod
@@ -222,6 +276,8 @@ class ScanConfig:
             line_start_marker_delay=data.get("line_start_marker_delay", 0),
             line_stop_marker_delay=data.get("line_stop_marker_delay", 0),
             line_duration=data.get("line_duration", None),
+            frame_sync=data.get("frame_sync", "resync"),
+            frame_sync_tolerance=data.get("frame_sync_tolerance", 0.1),
         )
 
     def __repr__(self):
@@ -342,78 +398,170 @@ class ImageReconstructor:
                 dtype=np.uint64,
             )  # existing shape logic
 
-        # Rolling context
-        self._partial_start_nsync = (
-            None  # stores unmatched marker from previous chunk
-        )
-        self._current_line_idx = 0
-        self._current_frame_idx = 0  # current frame index
+        # Line assembly. A line is turned into a segment (and its photons
+        # binned) only once the frame markers that could move or discard it
+        # have been seen, i.e. when `_lookahead` later line starts are known.
+        # Until then its start stays in `_open_starts`.
+        self._open_starts = np.empty((0,), dtype=np.int64)
+        # Global index (0, 1, 2, ...) of _open_starts[0]
+        self._line_count = 0
+        # Photons that may belong to open lines or to lines still to come
         self._pending_photons = np.empty((0,), dtype=event_dtype)
-        self._frame_marker_nsyncs = np.empty((0,), dtype=np.uint64)
- 
-        self._finished = False  # flag: stop processing when max frames reached
+        self._lookahead = (
+            int(np.ceil(self._frame_sync_tolerance_lines))
+            if config.frame_sync == "resync"
+            else 0
+        )
 
-        # self.stop_marker_phase = None
-        # self._stop_phase_computed = False
-        # self.line_duration = 0
-        # self.line_duration = 
+        # Frame sync: line k maps to (k - offset) // lines_per_frame, where
+        # offset = _offset_values[i] for the last i with _offset_breaks[i] <= k.
+        # Offsets change only on a resync.
+        self._offset_breaks = np.zeros(1, dtype=np.int64)
+        self._offset_values = np.zeros(1, dtype=np.int64)
+        # [lo, hi) global line ranges that overran a frame (found on resync)
+        self._excess_lines = []
+        self._pending_frame_nsyncs = np.empty((0,), dtype=np.int64)
+        # One dict per evaluated frame marker: nsync, lines_before, frame,
+        # mismatch (lines off the nearest frame boundary), action
+        self.frame_sync_events = []
+
+        # Line duration in nsync units. Taken from the config or estimated
+        # from the first LINE_DURATION_ESTIMATE_LINES lines; events are
+        # buffered until then.
+        self.line_duration = config.line_duration
+        self._estimate_buffer = []
+        self._estimate_line_starts = 0
+
+        self._finished = False  # flag: stop processing when max frames reached
 
         # ROI for masking
         self._roi_mask_stretched = None
         if roi_mask is not None:
             self._roi_mask_stretched = self._stretch_roi_mask(roi_mask)
-        
- 
+
     def update(self, events: np.ndarray):
         if self._finished:
             return
-        
+
         if events.dtype != event_dtype:
             raise TypeError(
                 f"Expected events with dtype {event_dtype}, got {events.dtype}"
             )
 
-        # Filter non-marker photons
+        if self.line_duration is None:
+            # Buffer until enough lines are available for a chunk-size
+            # independent estimate of the line duration
+            self._estimate_buffer.append(events)
+            self._estimate_line_starts += len(self._resolve_markers(events)[1])
+            if self._estimate_line_starts <= LINE_DURATION_ESTIMATE_LINES:
+                return
+            events = self._estimate_line_duration()
+
+        self._process(events)
+
+    def _process(self, events: np.ndarray) -> None:
+        if len(events) == 0:
+            return
+        last_nsync = int(events["nsync"][-1])
         if len(self._pending_photons) > 0:
             events = np.concatenate([self._pending_photons, events])
             self._pending_photons = np.empty((0,), dtype=events.dtype)
 
         photons = get_photons(events)
+        frame_markers, start_markers, _ = self._resolve_markers(events)
 
-        frame_markers, start_markers, stop_markers = resolve_markers(
+        if self.config.frame_sync != "count":
+            self._pending_frame_nsyncs = np.append(
+                self._pending_frame_nsyncs,
+                frame_markers["nsync"].astype(np.int64),
+            )
+
+        line_segments = self._build_line_segments(
+            start_markers["nsync"].astype(np.int64)
+        )
+
+        # Photons from the first open line on wait for later chunks
+        carry = self._carry_mask(photons["nsync"], last_nsync)
+        self._pending_photons = photons[carry]
+        self._assign_photons_to_segments(photons[~carry], line_segments)
+
+    def _resolve_markers(self, events: np.ndarray):
+        return resolve_markers(
             events,
             self.config.frame_start_marker_channel,
             self.config.line_start_marker_channel,
             self.config.line_stop_marker_channel,
         )
-        if len(start_markers) == 0:
-            # No line start markers → nothing to assemble this round
-            return
 
-        # if not self._stop_phase_computed:
-        #     self._compute_stop_phase(
-        #         frame_markers["nsync"],
-        #         start_markers["nsync"], stop_markers["nsync"]
-        #     )
+    def _estimate_line_duration(self) -> np.ndarray:
+        """Set the line duration from the buffered events; return them.
 
-        if self.config.line_duration is None:
-            _, self.config.line_duration = compute_line_duration(
-                frame_markers["nsync"],
-                start_markers["nsync"], 
-                stop_markers["nsync"],
+        Only markers up to the (LINE_DURATION_ESTIMATE_LINES + 1)-th line
+        start are used, so the estimate does not depend on how the stream is
+        chunked. The value is also stored in config.line_duration.
+        """
+        events = (
+            np.concatenate(self._estimate_buffer)
+            if self._estimate_buffer
+            else np.empty((0,), dtype=event_dtype)
+        )
+        self._estimate_buffer = []
+        frame_m, start_m, stop_m = self._resolve_markers(events)
+        starts = start_m["nsync"][: LINE_DURATION_ESTIMATE_LINES + 1]
+        duration = None
+        if len(starts) >= 2:
+            last = starts[-1]
+            frames = frame_m["nsync"][frame_m["nsync"] <= last]
+            stops = stop_m["nsync"][stop_m["nsync"] <= last]
+            _, duration = compute_line_duration(frames, starts, stops)
+            if duration is None:
+                # Frame markers left no complete line in the analysed window
+                _, duration = compute_line_duration(frames[:0], starts, stops)
+        if duration is None:
+            warnings.warn(
+                f"Line duration could not be estimated from "
+                f"{len(starts)} line start marker(s); no photons are binned.",
+                stacklevel=3,
             )
+            duration = 0
+        self.line_duration = int(duration)
+        # Read back by callers (e.g. napari-flopa) to report the duration
+        self.config.line_duration = self.line_duration
+        return events
 
-        line_segments = self._build_line_segments(frame_markers, start_markers)
+    def _carry_mask(self, nsync: np.ndarray, last_nsync: int) -> np.ndarray:
+        """Photons that may belong to an open line or to a later line.
 
-        self._assign_photons_to_segments(photons, line_segments)
+        All other photons can only belong to lines already turned into
+        segments. Photons between the end of the last open line and the end
+        of the chunk belong to no line and are dropped, which bounds the
+        carry-over when the stream has no line markers for a while.
+        """
+        n = nsync.astype(np.int64)
+        start_delay = self.config.line_start_marker_delay
+        # A later line starts after last_nsync; with a negative start delay
+        # it accepts photons from before its marker
+        later = n >= last_nsync + min(start_delay, 0)
+        if len(self._open_starts) == 0:
+            return later
+        first = self._open_starts[0] + start_delay
+        end = (
+            self._open_starts[-1]
+            + self.line_duration
+            + self.config.line_stop_marker_delay
+        )
+        return (n >= first) & ((n < end) | later)
 
     def finalize(self):
-        if self._partial_start_nsync is not None:
-            self._flush_final_line()
+        if self.line_duration is None:
+            self._process(self._estimate_line_duration())
+        self._finalize_frame_sync()
+        self._flush_open_lines()
 
         data = {}
         active_detectors = sorted(self.active_detectors)
-        channels = max(active_detectors) + 1
+        # A file without binned photons yields empty images, not an error
+        channels = max(active_detectors, default=0) + 1
 
         data["tcspc_resolution"] = ((), self.tcspc_resolution)
         data["omega"] = ((), self.omega)
@@ -432,7 +580,7 @@ class ImageReconstructor:
                     len(self.config.line_accumulations),
                     self.config.lines,
                     self.config.pixels,
-                    max(self.active_detectors) + 1,
+                    channels,
                 ),
                 dtype=np.uint32,
             )
@@ -600,74 +748,63 @@ class ImageReconstructor:
 
         return stretched_mask
        
-    def _build_line_segments(
-        self,
-        frame_markers: np.ndarray,
-        start_markers: np.ndarray,
-    ) -> np.ndarray:
+    def _build_line_segments(self, start_nsyncs: np.ndarray) -> np.ndarray:
+        """Turn line starts into segments, keeping the newest ones open.
 
+        The last line start always stays open (its photons may still be
+        arriving); in "resync" mode `_lookahead` more stay open, so that a
+        frame marker can still discard lines that overran a frame.
+        """
         if self._finished:
             return np.empty(0, dtype=segment_dtype)
 
-        frame_nsyncs = frame_markers["nsync"]
-        start_nsyncs = start_markers["nsync"]
-
-        self._frame_marker_nsyncs = np.append(
-            self._frame_marker_nsyncs, frame_nsyncs, axis=0
-        )
-
-        if self._partial_start_nsync is not None:
-            start_nsyncs = np.insert(
-                start_nsyncs, 0, self._partial_start_nsync
-            )
-            self._partial_start_nsync = None
-
-        self._partial_start_nsync = start_nsyncs[-1]
-
-        start = start_nsyncs[:-1].astype(np.int64)
-        # stop = start + self.config.line_duration
-
-        if len(start) == 0:
+        starts = np.concatenate([self._open_starts, start_nsyncs])
+        if len(starts) == 0:
             return np.empty(0, dtype=segment_dtype)
+        # starts[0] has global line index self._line_count
+        first_line = self._line_count
 
-        # Assign frames vectorized
-        frame_idx = (
-            np.searchsorted(self._frame_marker_nsyncs, start, side="right") - 1
+        # All line starts preceding these frame markers are known now, so
+        # they can be checked (and resync offsets set) before lines are binned
+        self._process_frame_markers(starts, first_line)
+
+        n_build = max(len(starts) - 1 - self._lookahead, 0)
+        self._open_starts = starts[n_build:]
+        if n_build == 0:
+            return np.empty(0, dtype=segment_dtype)
+        self._line_count += n_build
+        segments = self._make_segments(
+            starts[:n_build], first_line + np.arange(n_build, dtype=np.int64)
         )
-
-        # Clip to requested frame count
-        valid = frame_idx < self.config.frames
-        if not np.any(valid):
+        if len(segments) and segments["frame_idx"][-1] >= self.config.frames:
+            # Frame index never decreases: every later line is out of range too
             self._finished = True
-            return np.empty(0, dtype=segment_dtype)
+        return segments[segments["frame_idx"] < self.config.frames]
 
-        start = start[valid]
-        # stop = stop[valid]
-        frame_idx = frame_idx[valid]
+    def _make_segments(
+        self, start: np.ndarray, global_line: np.ndarray
+    ) -> np.ndarray:
+        """Build segments from line start nsyncs and their global indices.
+
+        Lines mapping before frame 0 and lines that overran a frame are
+        dropped; lines at or beyond config.frames are kept so the caller can
+        detect the end of the range.
+        """
+        frame_idx, line_idx = self._frame_and_line(global_line)
+        keep = frame_idx >= 0
+        for lo, hi in self._excess_lines:
+            keep &= (global_line < lo) | (global_line >= hi)
+        frame_idx = frame_idx[keep]
+        line_idx = line_idx[keep]
 
         # If bidirectional: even=forward, odd=reversed
-        _, inverse, counts = np.unique(
-            frame_idx, return_inverse=True, return_counts=True
-        )
-        cumsum = np.cumsum(np.r_[0, counts[:-1]])
-        line_idx = np.arange(len(frame_idx)) - cumsum[inverse]
-
-        if frame_idx[0] == self._current_frame_idx:
-            line_idx[
-                frame_idx == self._current_frame_idx
-            ] += self._current_line_idx
-
-        self._current_frame_idx = frame_idx[-1]
-        self._current_line_idx = line_idx[-1] + 1
-
         start, stop, reversed_mask = _build_line_windows(
-            start,
-            line_duration=self.config.line_duration,
+            start[keep],
+            line_duration=self.line_duration,
             line_idx=line_idx,
             bidirectional=self.config.bidirectional,
             line_start_marker_delay=self.config.line_start_marker_delay,
             line_stop_marker_delay=self.config.line_stop_marker_delay,
-            # laser_sync_rate=self.laser_sync_rate,
         )
 
         result = np.empty(len(start), dtype=segment_dtype)
@@ -676,37 +813,139 @@ class ImageReconstructor:
         result["frame_idx"] = frame_idx
         result["line_idx"] = line_idx
         result["reversed"] = reversed_mask
-
-        if not len(result):
-            self._finished = True
-
         return result
 
-    # def _adjust_line_bounds(
-    #     self,
-    #     start: np.ndarray,
-    #     stop: np.ndarray,
-    # #     reversed_flags: np.ndarray,
-    # ) -> tuple[np.ndarray, np.ndarray]:
-    #     start = np.asarray(start, dtype=np.int64).copy()
-    #     stop = np.asarray(stop, dtype=np.int64).copy()
-    #     # reversed_flags = np.asarray(reversed_flags, dtype=bool)
+    # ------------------------------------------------------------------
+    # Frame sync
+    # ------------------------------------------------------------------
+    @property
+    def _frame_sync_tolerance_lines(self) -> float:
+        """Largest mismatch (in lines) that "resync" corrects."""
+        return max(
+            1.0, self.config.frame_sync_tolerance * self.config.lines_per_frame
+        )
 
-    #     line_start_delay = int(self.config.line_start_marker_delay * line_duration)
-    #     line_stop_delay = int(self.config.line_stop_marker_delay * line_duration)
+    def _line_offset(self, global_line):
+        pos = np.searchsorted(self._offset_breaks, global_line, side="right") - 1
+        return self._offset_values[pos]
 
-    #     start += line_start_delay
-    #     stop += line_stop_delay
-    #     return start, stop
+    def _frame_and_line(self, global_line):
+        """Map global line indices to (frame, line within frame)."""
+        rel = global_line - self._line_offset(global_line)
+        return np.divmod(rel, self.config.lines_per_frame)
 
-    #     return _adjust_line_bounds(
-    #         start,
-    #         stop,
-    #         reversed_flags,
-    #         self.line_duration,
-    #         self.config.line_start_marker_delay,
-    #         self.config.line_stop_marker_delay,
-        # )
+    def _process_frame_markers(
+        self, start_nsyncs: np.ndarray, first_line: int
+    ) -> None:
+        """Check pending frame markers that precede the last known line start."""
+        if len(self._pending_frame_nsyncs) == 0:
+            return
+        pending = np.sort(self._pending_frame_nsyncs)
+        ready = pending[pending <= start_nsyncs[-1]]
+        self._pending_frame_nsyncs = pending[pending > start_nsyncs[-1]]
+        # A marker coinciding with a line start precedes that line
+        lines_before = first_line + np.searchsorted(
+            start_nsyncs, ready, side="left"
+        )
+        for nsync, n in zip(ready, lines_before):
+            self._check_frame_marker(int(nsync), int(n))
+
+    def _check_frame_marker(self, nsync: int, lines_before: int) -> None:
+        """Compare one frame marker with the frame boundary nearest to it."""
+        lines_per_frame = self.config.lines_per_frame
+        rel = lines_before - int(self._line_offset(lines_before))
+        frame = int(np.floor(rel / lines_per_frame + 0.5))
+        if frame > self.config.frames:
+            return  # beyond the reconstructed range
+        mismatch = rel - frame * lines_per_frame
+
+        if mismatch == 0:
+            action = "ok"
+        elif self.config.frame_sync == "resync" and (
+            abs(mismatch) <= self._frame_sync_tolerance_lines
+        ):
+            # The line right after this marker becomes line 0 of `frame`
+            action = "resync"
+            self._offset_breaks = np.append(self._offset_breaks, lines_before)
+            self._offset_values = np.append(
+                self._offset_values, lines_before - frame * lines_per_frame
+            )
+            if mismatch > 0:
+                # Lines past the end of the previous frame belong nowhere.
+                # They are still open thanks to the lookahead.
+                self._excess_lines.append((lines_before - mismatch, lines_before))
+        elif self.config.frame_sync == "resync":
+            action = "ignored"
+        else:
+            action = "reported"
+
+        first_problem = action != "ok" and all(
+            e["action"] == "ok" for e in self.frame_sync_events
+        )
+        self.frame_sync_events.append(
+            {
+                "nsync": nsync,
+                "lines_before": lines_before,
+                "frame": frame,
+                "mismatch": mismatch,
+                "action": action,
+            }
+        )
+        if first_problem:
+            warnings.warn(
+                f"Frame marker at nsync {nsync} is {mismatch:+d} line(s) off "
+                f"the boundary of frame {frame} (expected {lines_per_frame} "
+                f"line start markers per frame = lines x accumulations); "
+                f"action: {action}. Likely causes: a dropped or spurious line "
+                f"marker, a frame marker glitch, or wrong 'lines' / "
+                f"'line_accumulations'. All markers are listed in "
+                f"ImageReconstructor.frame_sync_events.",
+                FrameSyncWarning,
+                stacklevel=4,
+            )
+
+    def _finalize_frame_sync(self) -> None:
+        """Check remaining frame markers and the total line count."""
+        lines_seen = self._line_count + len(self._open_starts)
+        if not self._finished and lines_seen > 0:
+            # Markers after the last line start (e.g. Leica end-of-frame)
+            for nsync in np.sort(self._pending_frame_nsyncs):
+                self._check_frame_marker(int(nsync), lines_seen)
+        # If reading stopped early, later markers cannot be placed
+        self._pending_frame_nsyncs = np.empty((0,), dtype=np.int64)
+
+        if self.config.frame_sync != "count":
+            if not self.frame_sync_events:
+                warnings.warn(
+                    "No frame markers found on channel "
+                    f"{self.config.frame_start_marker_channel}; frames were "
+                    "assigned by line counting only. Set frame_sync='count' "
+                    "to silence this.",
+                    FrameSyncWarning,
+                    stacklevel=3,
+                )
+            off = [e["action"] for e in self.frame_sync_events if e["action"] != "ok"]
+            if len(off) > 1:
+                counts = {a: off.count(a) for a in sorted(set(off))}
+                warnings.warn(
+                    f"{len(off)} of {len(self.frame_sync_events)} frame "
+                    f"markers were off a frame boundary {counts}.",
+                    FrameSyncWarning,
+                    stacklevel=3,
+                )
+
+        if not self._finished:
+            expected = self.config.frames * self.config.lines_per_frame
+            lines_used = lines_seen - int(self._line_offset(lines_seen))
+            if lines_used < expected:
+                warnings.warn(
+                    f"Only {lines_used} of the {expected} line start markers "
+                    f"expected for {self.config.frames} frame(s) x "
+                    f"{self.config.lines_per_frame} lines were found; the "
+                    f"remaining lines are empty.",
+                    FrameSyncWarning,
+                    stacklevel=3,
+                )
 
     def _assign_photons_to_segments(
         self, photons: np.ndarray, segments: np.ndarray
@@ -807,8 +1046,6 @@ class ImageReconstructor:
                 1,
             )
 
-        pending_photons_mask = photons["nsync"] >= segment_ends[-1]
-        self._pending_photons = photons[pending_photons_mask]
         self.active_detectors.update(np.unique(channels))
 
     def _reshape_and_sum(
@@ -818,36 +1055,21 @@ class ImageReconstructor:
         reshaped = sliced.reshape(lines, accum, pixels, channels)
         return reshaped.sum(axis=1)
 
-    def _flush_final_line(self):
-
-        final_start = np.array([self._partial_start_nsync], dtype=np.int64)
-        final_stop = final_start + self.config.line_duration
-        final_reversed = np.array(
-            [self.config.bidirectional and (self._current_line_idx % 2 == 1)],
-            dtype=bool,
-        )
-        # final_start, final_stop = self._adjust_line_bounds(
-        #     final_start, final_stop, final_reversed
-        # )
-        # final_start += int(self.config.line_start_marker_delay * self.line_duration)
-        # final_stop += int(self.config.line_stop_marker_delay * self.line_duration)
-
-        final_start += self.config.line_start_marker_delay
-        final_stop += self.config.line_stop_marker_delay
-
-        final_segment = np.empty(1, dtype=segment_dtype)
-        final_segment["start_nsync"] = final_start
-        final_segment["stop_nsync"] = final_stop
-        final_segment["frame_idx"] = self._current_frame_idx
-        final_segment["line_idx"] = self._current_line_idx
-        final_segment["reversed"] = final_reversed
-
-        self._assign_photons_to_segments(self._pending_photons, final_segment)
+    def _flush_open_lines(self):
+        """Bin the lines still open at the end of the stream."""
+        if len(self._open_starts) and not self._finished:
+            n = len(self._open_starts)
+            segments = self._make_segments(
+                self._open_starts,
+                self._line_count + np.arange(n, dtype=np.int64),
+            )
+            segments = segments[segments["frame_idx"] < self.config.frames]
+            self._assign_photons_to_segments(self._pending_photons, segments)
+        self._line_count += len(self._open_starts)
+        self._open_starts = np.empty((0,), dtype=np.int64)
         self._pending_photons = np.empty(
             (0,), dtype=self._pending_photons.dtype
         )
-        self._partial_start_nsync = None
-
     # def _compute_stop_phase(
     #     self,
     #     frame_nsyncs: NDArray[np.uint64],

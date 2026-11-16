@@ -8,3 +8,4 @@ src/tttrkit/_version.py
 development/
 build/
 .vscode/
+tests/realdata_references/

@@ -31,9 +31,11 @@ def resolve_markers(
     """Extract compatible frame, line-start, and line-stop marker events.
 
     Marker channels are bitmasks, so a single event may represent multiple
-    physical marker inputs. Frame/start and frame/stop coincidences are valid,
-    but one event cannot be both a line start and a line stop. Such events are
-    excluded from every returned role.
+    physical marker inputs. Frame/start and frame/stop coincidences are valid.
+    A line start coinciding with a line stop (e.g. value 3) is a line start:
+    the stop ends the previous line, as on scanners without a flyback gap
+    between lines. It is therefore not returned as a line stop.
+    Markers that include an unconfigured input are discarded as glitches.
     """
     marker_masks = (
         frame_marker_mask,
@@ -64,12 +66,10 @@ def resolve_markers(
     has_line_start = (channels & line_start_marker_mask) != 0
     has_line_stop = (channels & line_stop_marker_mask) != 0
 
-    compatible = ~(has_line_start & has_line_stop)
-
     return (
-        marker_events[compatible & has_frame],
-        marker_events[compatible & has_line_start],
-        marker_events[compatible & has_line_stop],
+        marker_events[has_frame],
+        marker_events[has_line_start],
+        marker_events[has_line_stop & ~has_line_start],
     )
 
 

@@ -32,3 +32,8 @@ members = [
     "examples",
     ".",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Test this checkout, regardless of what is installed in the environment
+pythonpath = ["src"]

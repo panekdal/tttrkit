@@ -1,0 +1,74 @@
+{
+  "_comment": [
+    "Cases for the sample sets in tests/realdata_references (clean/ and",
+    "anomalies/). The scan configuration of each file comes from its",
+    "napari-flopa sidecar <name>_scan_config.json. Files listed here are run",
+    "once per entry instead of once with their sidecar config:",
+    "  id: case name (default: the path); config: ScanConfig kwargs that",
+    "  override the sidecar (e.g. frame_sync, which napari-flopa does not store);",
+    "  chunk_sizes: the first is used for the fingerprint, the others must give",
+    "  identical output; expect: checked on every run, independently of the",
+    "  fingerprints (frame_sync_warnings, empty_lines, frame_sync).",
+    "Sample files not listed here run once with default checks."
+  ],
+  "cases": [
+    {
+      "path": "clean/abberior_f3.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 3}}
+    },
+    {
+      "path": "clean/abberior_f4_seq1_3.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 4}}
+    },
+    {
+      "path": "clean/zeiss_f1_accu4.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 1}}
+    },
+    {
+      "path": "clean/leica_mono.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 1}}
+    },
+    {
+      "path": "clean/leica_bidi_harmonic.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 1}}
+    },
+    {
+      "id": "anomalies/zeiss_f1_start_glitch.ptu[validate]",
+      "path": "anomalies/zeiss_f1_start_glitch.ptu",
+      "config": {"frame_sync": "validate"},
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 1, "empty_lines": 0, "frame_sync": {"ok": 1, "reported": 1}}
+    },
+    {
+      "id": "anomalies/zeiss_f1_start_glitch.ptu[resync]",
+      "path": "anomalies/zeiss_f1_start_glitch.ptu",
+      "config": {"frame_sync": "resync"},
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync_warnings": 1, "empty_lines": 0, "frame_sync": {"ok": 1, "resync": 1}}
+    },
+    {
+      "path": "anomalies/abberior_value3_markers.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync": {"ok": 4, "resync": 1}}
+    },
+    {
+      "path": "anomalies/abberior_missing_line_markers.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync": {"ok": 1, "resync": 3}}
+    },
+    {
+      "path": "anomalies/zeiss_plus1_resync.ptu",
+      "chunk_sizes": [1000000, 99991],
+      "expect": {"frame_sync": {"resync": 1}}
+    },
+    {
+      "path": "anomalies/no_photons.ptu",
+      "expect": {"frame_sync": {"ok": 1}}
+    }
+  ]
+}
