@@ -8,13 +8,13 @@ def pytest_addoption(parser):
         default=os.environ.get("TTTRKIT_DATA_DIR"),
         metavar="DIR",
         help="directory searched for .ptu files (default: $TTTRKIT_DATA_DIR, "
-        "else the sample sets in tests/realdata_references if present)",
+        "else the sample sets in tests/realdata_samples if present)",
     )
     g.addoption(
         "--realdata-refs",
         default=os.environ.get("TTTRKIT_REFERENCE_DIR"),
         metavar="DIR",
-        help="reference fingerprints (default: tests/realdata_references/"
+        help="reference fingerprints (default: tests/realdata_samples/"
         "fingerprints for the sample sets, .../corpus_fingerprints otherwise)",
     )
     g.addoption(

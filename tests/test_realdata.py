@@ -6,7 +6,7 @@
     pytest ... --update-references       # accept intended behaviour changes
     pytest ... --add-missing-references  # fingerprint newly added files
 
-The sample sets live in tests/realdata_references (git-ignored, local to
+The sample sets live in tests/realdata_samples (git-ignored, local to
 this machine); without them and without --realdata the tests are skipped.
 See realdata_harness.py for how cases and configs are resolved.
 """
@@ -47,7 +47,7 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize(
             "case",
             [pytest.param(None, marks=pytest.mark.skip(
-                reason="no sample sets in tests/realdata_references; pass "
+                reason="no sample sets in tests/realdata_samples; pass "
                 "--realdata DIR or set TTTRKIT_DATA_DIR"
             ))],
             ids=["no-data"],

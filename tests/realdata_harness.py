@@ -6,13 +6,13 @@ diagnostics). Fingerprints are compared with stored references, so any
 change in reconstruction behaviour on real data is detected and has to be
 accepted explicitly by regenerating the references.
 
-Default data: the sample sets in tests/realdata_references (git-ignored,
+Default data: the sample sets in tests/realdata_samples (git-ignored,
 local to this machine):
     clean/        files without acquisition anomalies, one or more per system
     anomalies/    files with marker glitches and other edge cases
     fingerprints/ their reference fingerprints
 Any other directory (e.g. the whole data folder) can be tested too; its
-fingerprints go to tests/realdata_references/corpus_fingerprints/.
+fingerprints go to tests/realdata_samples/corpus_fingerprints/.
 
 Scan configuration per file, first match wins:
     1. <name>_scan_config.json   napari-flopa scan configuration next to the file
@@ -44,7 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-SAMPLE_DIR = Path(__file__).with_name("realdata_references")
+SAMPLE_DIR = Path(__file__).with_name("realdata_samples")
 MANIFEST = Path(__file__).with_name("realdata_cases.json")
 SIDECAR_SUFFIX = "_scan_config.json"
 CHUNK_SIZE = 1_000_000

@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Cases for the sample sets in tests/realdata_references (clean/ and",
+    "Cases for the sample sets in tests/realdata_samples (clean/ and",
     "anomalies/). The scan configuration of each file comes from its",
     "napari-flopa sidecar <name>_scan_config.json. Files listed here are run",
     "once per entry instead of once with their sidecar config:",
@@ -28,7 +28,7 @@
       "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 1}}
     },
     {
-      "path": "clean/leica_mono.ptu",
+      "path": "clean/leica_mono_harmonic.ptu",
       "chunk_sizes": [1000000, 99991],
       "expect": {"frame_sync_warnings": 0, "empty_lines": 0, "frame_sync": {"ok": 1}}
     },
