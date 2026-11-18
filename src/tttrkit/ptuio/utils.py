@@ -159,9 +159,17 @@ def estimate_bidirectional_prealign(
         start_markers["nsync"],
         stop_markers["nsync"],
     )
+    if marker_timing.pair_count == 0:
+        raise ValueError(
+            "No line with both a start and a stop marker in the probe chunk; "
+            "pre-alignment needs line stop markers. Check "
+            "line_stop_marker_channel, or try a larger chunk_length."
+        )
     # The line duration the segments are built with (first frame or given)
     duration_nsync = int(probe_config.line_duration)
-    pauses_nsync = marker_timing.intervals - marker_timing.durations
+    # Durations exist only for lines with a stop marker; pair them with
+    # their own intervals (lines without a stop are left out of both)
+    pauses_nsync = marker_timing.paired_intervals - marker_timing.durations
     # duty = np.median(durations_nsync) / np.median(periods_nsync)
     if verbose:
         print(f"Durations [nsync]: {marker_timing.median_duration} +/- {np.std(marker_timing.durations)}")
@@ -239,7 +247,7 @@ def estimate_bidirectional_prealign(
     time_shift = pixel_shift * single_pixel_duration_nsync / laser_sync_rate
 
     durations_s = marker_timing.durations / laser_sync_rate
-    periods_s = marker_timing.intervals / laser_sync_rate
+    periods_s = marker_timing.paired_intervals / laser_sync_rate
  
     backward_aligned = np.roll(backward,pixel_shift)
 
@@ -253,7 +261,7 @@ def estimate_bidirectional_prealign(
             "backward": (("pixel",), backward),
             "backward_aligned":(("pixel",), backward_aligned),
             "durations_nsync": (("paired_interval"), marker_timing.durations),
-            "periods_nsync": (("paired_interval"), marker_timing.intervals),            
+            "periods_nsync": (("paired_interval"), marker_timing.paired_intervals),            
             "durations_s": (("paired_interval"), durations_s),
             "periods_s": (("paired_interval"), periods_s),            
             "pixel_shift": ((), pixel_shift),
