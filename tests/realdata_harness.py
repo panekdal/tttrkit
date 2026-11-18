@@ -366,18 +366,27 @@ ARRAYS = ("line_profile", "column_profile", "tcspc_profile")
 
 
 def _git_describe() -> str:
-    """Version of the tttrkit code under test (not of this test file)."""
+    """Version of the tttrkit code under test: the commit, plus "-dirty" if
+    the package itself has uncommitted changes. Changes elsewhere (tests,
+    sample configs, fingerprints) do not affect reconstruction."""
     try:
         import subprocess
 
         import tttrkit
 
-        return subprocess.run(
-            ["git", "describe", "--always", "--dirty"],
-            cwd=Path(tttrkit.__file__).parent,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args],
+                cwd=Path(tttrkit.__file__).parent,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        version = git("describe", "--always")
+        if git("status", "--porcelain", "--", "."):
+            version += "-dirty"
+        return version
     except Exception:
         return "unknown"
 
