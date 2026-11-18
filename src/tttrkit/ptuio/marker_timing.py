@@ -128,3 +128,92 @@ def compute_line_duration(
         return default_phase, int(timing.median_interval * default_phase)
 
     return None, None
+
+@dataclass(frozen=True)
+class LineDurationEstimate:
+    """Line duration estimated from line markers (all values in nsync units).
+
+    ``source`` is "stop_markers" (median start-to-stop time), "line_period"
+    (``default_phase`` times the median line period, without stop markers)
+    or None when nothing could be estimated. ``median_period`` is the median
+    start-to-start interval of lines followed by a line of the same frame,
+    None if there is none.
+    """
+
+    duration: int | None
+    source: str | None
+    median_period: float | None
+    periods: int  # within-frame intervals behind median_period
+    pairs: int  # start/stop pairs behind a "stop_markers" estimate
+
+
+def within_frame_intervals(
+    start_nsyncs: NDArray[np.uint64],
+    frame_nsyncs: NDArray[np.uint64],
+    lines_per_frame: int | None = None,
+    first_line: int = 0,
+) -> NDArray[np.int64]:
+    """Start-to-start intervals of lines followed by a line of the same frame.
+
+    The interval from start i to start i + 1 is dropped when a frame marker
+    lies in (start i, start i + 1] (a marker coinciding with a line start
+    precedes that line, as in ImageReconstructor), or, with
+    ``lines_per_frame``, when line ``first_line + i + 1`` starts a frame by
+    line count. Dropped intervals hold the flyback and any pause between
+    frames, e.g. of a time-lapse, which are not line periods.
+    """
+    starts = _as_nsyncs("start_nsyncs", start_nsyncs)
+    frames = _as_nsyncs("frame_nsyncs", frame_nsyncs)
+    intervals = np.diff(starts)
+    keep = np.ones(len(intervals), dtype=bool)
+    lines_before = np.searchsorted(starts, frames, side="left")
+    lines_before = lines_before[
+        (lines_before >= 1) & (lines_before <= len(intervals))
+    ]
+    keep[lines_before - 1] = False
+    if lines_per_frame:
+        next_line = first_line + np.arange(1, len(starts), dtype=np.int64)
+        keep &= next_line % lines_per_frame != 0
+    return intervals[keep]
+
+
+def estimate_line_duration(
+    frame_nsyncs: NDArray[np.uint64],
+    start_nsyncs: NDArray[np.uint64],
+    stop_nsyncs: NDArray[np.uint64],
+    *,
+    lines_per_frame: int | None = None,
+    first_line: int = 0,
+    default_phase: float = 0.80,
+) -> LineDurationEstimate:
+    """Estimate the line duration from all lines of the given markers.
+
+    With line stop markers, the median start-to-stop time; a pause between
+    frames does not affect it. Without, ``default_phase`` times the median
+    line period, from within-frame intervals only (see
+    :func:`within_frame_intervals`).
+    """
+    periods = within_frame_intervals(
+        start_nsyncs, frame_nsyncs, lines_per_frame, first_line
+    )
+    median_period = float(np.median(periods)) if len(periods) else None
+    timing = analyze_stop_marker_timing(
+        np.empty(0, dtype=np.int64), start_nsyncs, stop_nsyncs
+    )
+    if timing.pair_count:
+        return LineDurationEstimate(
+            int(timing.median_duration),
+            "stop_markers",
+            median_period,
+            len(periods),
+            timing.pair_count,
+        )
+    if median_period is not None:
+        return LineDurationEstimate(
+            int(median_period * default_phase),
+            "line_period",
+            median_period,
+            len(periods),
+            0,
+        )
+    return LineDurationEstimate(None, None, None, 0, 0)

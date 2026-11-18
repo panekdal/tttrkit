@@ -57,8 +57,10 @@ def test_napari_flopa_pipeline(ptu):
     with contextlib.redirect_stdout(io.StringIO()):
         # tttrkit directly, as the regression harness reads the sidecar
         reader, corr = h._open(ptu)
+        cfg = ScanConfig(**config)
+        h.prescan(reader, cfg, h.CHUNK_SIZE)
         rec = ImageReconstructor(
-            ScanConfig(**config), outputs=["photon_count"], tcspc_channels=tcspc
+            cfg, outputs=["photon_count"], tcspc_channels=tcspc
         )
         for chunk in reader.iter_chunks(h.CHUNK_SIZE):
             rec.update(corr.correct(chunk))

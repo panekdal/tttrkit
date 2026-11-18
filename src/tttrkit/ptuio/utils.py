@@ -8,6 +8,7 @@ from .decoder import T3OverflowCorrector, resolve_markers
 from .reader import TTTRReader
 from .reconstructor import ScanConfig, SegmentReconstructor
 from .marker_timing import analyze_stop_marker_timing
+from .prescan import prescan_first_frame
 from scipy.optimize import curve_fit
 from .decoder import T3OverflowCorrector, marker_events, resolve_markers
 from collections import Counter
@@ -113,6 +114,24 @@ def _read_probe_chunk(
     corrected_chunk = corrector.correct(chunk)
     return corrected_chunk, parity
 
+
+def _with_line_duration(
+    reader: TTTRReader, config: ScanConfig, wrap: int
+) -> ScanConfig:
+    """A copy of config with the line duration of the first frame filled in
+    (see prescan_first_frame) if it is not set, so that segment
+    reconstruction uses the same line duration as image reconstruction."""
+    config = copy.deepcopy(config)
+    if config.line_duration is None:
+        prescan_first_frame(reader, config, wrap=wrap)
+        if config.line_duration is None:
+            raise ValueError(
+                "The line duration could not be estimated from the first "
+                "frame; set ScanConfig.line_duration."
+            )
+    return config
+
+
 def estimate_bidirectional_prealign(
     reader: TTTRReader,
     cfg: ScanConfig,
@@ -122,7 +141,7 @@ def estimate_bidirectional_prealign(
     skip_chunks: int = 0,
     verbose = True,
 ) -> xr.Dataset:
-    probe_config = copy.deepcopy(cfg)
+    probe_config = _with_line_duration(reader, cfg, wrap)
 
     corrected_chunk, parity = _read_probe_chunk(
         reader, cfg, wrap, chunk_length, skip_chunks, verbose
@@ -140,7 +159,8 @@ def estimate_bidirectional_prealign(
         start_markers["nsync"],
         stop_markers["nsync"],
     )
-    duration_nsync = int(marker_timing.median_duration)
+    # The line duration the segments are built with (first frame or given)
+    duration_nsync = int(probe_config.line_duration)
     pauses_nsync = marker_timing.intervals - marker_timing.durations
     # duty = np.median(durations_nsync) / np.median(periods_nsync)
     if verbose:
@@ -306,6 +326,8 @@ def estimate_bidirectional_shift(
     )
 
     scores = np.zeros_like(shifts)
+
+    config = _with_line_duration(reader, config, wrap)
 
     # Read the probe chunk once and reuse it for every shift, so all shifts are
     # evaluated on the same data; parity tells us whether local line 0 is really

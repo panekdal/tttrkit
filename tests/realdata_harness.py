@@ -239,6 +239,16 @@ def _hash(a: np.ndarray) -> str:
     return h.hexdigest()
 
 
+def prescan(reader, cfg, chunk_size: int):
+    """First-frame pre-scan (fills cfg.line_duration); None on an older
+    tttrkit, whose ImageReconstructor estimated the line duration itself."""
+    try:
+        from tttrkit.ptuio.prescan import prescan_first_frame
+    except ImportError:
+        return None
+    return prescan_first_frame(reader, cfg, chunk_size=chunk_size)
+
+
 def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -> dict:
     from tttrkit.ptuio.reconstructor import ImageReconstructor, ScanConfig
 
@@ -248,12 +258,15 @@ def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -
         "tcspc_bin_factor", max(1, rk.get("tcspc_channels", 2**15) // 512)
     )
     cfg = ScanConfig(**_supported_kwargs(ScanConfig.__init__, config))
-    rec = ImageReconstructor(cfg, **_supported_kwargs(ImageReconstructor.__init__, rk))
 
     reader, corr = _open(path)
     out = io.StringIO()
     with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(out):
         warnings.simplefilter("always")
+        scan = prescan(reader, cfg, chunk_size)
+        rec = ImageReconstructor(
+            cfg, **_supported_kwargs(ImageReconstructor.__init__, rk)
+        )
         for chunk in reader.iter_chunks(chunk_size):
             rec.update(corr.correct(chunk))
         ds = rec.finalize()
@@ -283,6 +296,11 @@ def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -
             for a in sorted({e["action"] for e in events})
         },
         # informational only, not compared
+        "prescan": None if scan is None else {
+            "verdict": scan.verdict,
+            "measured_lines_per_frame": scan.measured_lines_per_frame,
+            "line_duration_source": scan.line_duration_source,
+        },
         "data_quality": {k: int(v) for k, v in ds.attrs.items()},
         "frame_sync_mismatches": [int(e["mismatch"]) for e in events if e["mismatch"]],
         "warnings": [f"{w.category.__name__}: {w.message}"[:300] for w in caught],

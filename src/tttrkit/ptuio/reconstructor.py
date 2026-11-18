@@ -5,7 +5,7 @@ import xarray as xr
 from numpy.typing import NDArray
 
 from .decoder import event_dtype, get_photons, resolve_markers
-from .marker_timing import compute_line_duration
+from .marker_timing import estimate_line_duration, within_frame_intervals
 
 segment_dtype = [
     ("start_nsync", "i8"),
@@ -24,10 +24,6 @@ AVAILABLE_OUTPUTS = [
 
 FRAME_SYNC_MODES = ("count", "validate", "resync")
 
-# Lines used to estimate the line duration when ScanConfig.line_duration is
-# None. Fixed, so that the estimate does not depend on the chunk size.
-LINE_DURATION_ESTIMATE_LINES = 128
-
 
 class DataQualityWarning(UserWarning):
     """The data and the configuration disagree enough to lose information."""
@@ -35,6 +31,25 @@ class DataQualityWarning(UserWarning):
 
 class FrameSyncWarning(DataQualityWarning):
     """Frame markers disagree with the line count implied by ScanConfig."""
+
+
+class ScanConfigWarning(DataQualityWarning):
+    """The first frame of the data does not match the ScanConfig.
+
+    Issued by :func:`tttrkit.ptuio.prescan.prescan_first_frame` and, for the
+    line duration, by SegmentReconstructor.
+    """
+
+
+def frame_boundary_mismatch(lines_before: int, lines_per_frame: int):
+    """(frame, mismatch) of a frame marker preceded by ``lines_before`` lines.
+
+    ``frame`` is the nearest frame boundary and ``mismatch`` the number of
+    lines the marker is off it (0 for a marker on a boundary). Shared by the
+    frame sync of ImageReconstructor and the first-frame pre-scan.
+    """
+    frame = int(np.floor(lines_before / lines_per_frame + 0.5))
+    return frame, lines_before - frame * lines_per_frame
 
 
 # Discarded fractions above which a DataQualityWarning is issued. Below
@@ -149,8 +164,10 @@ class ScanConfig:
     effectively stretched or compressed in phase.
 
     ``line_duration`` (nsync units) is the photon-acceptance window of a line
-    before delays are applied. If None, ImageReconstructor estimates it from
-    the first ``LINE_DURATION_ESTIMATE_LINES`` lines of the stream.
+    before delays are applied. ImageReconstructor requires it; if None,
+    :func:`tttrkit.ptuio.prescan.prescan_first_frame` estimates it from the
+    first frame of the data and fills it in. SegmentReconstructor estimates
+    it from its own chunk when None.
 
     Frame assignment:
         Lines are assigned to frames by counting line start markers: line k
@@ -347,6 +364,18 @@ class ImageReconstructor:
 
         if not isinstance(config, ScanConfig):
             raise TypeError("ImageReconstructor requires a ScanConfig object")
+        if config.line_duration is None:
+            raise ValueError(
+                "ScanConfig.line_duration is not set. Run "
+                "tttrkit.ptuio.prescan.prescan_first_frame(reader, config) "
+                "first: it estimates the line duration from the first frame "
+                "of the data and fills it in. Or set it explicitly."
+            )
+        if config.line_duration <= 0:
+            raise ValueError(
+                f"ScanConfig.line_duration must be positive, got "
+                f"{config.line_duration}"
+            )
         if not isinstance(tcspc_bin_factor, (int, np.integer)) or tcspc_bin_factor < 1:
             raise ValueError("tcspc_bin_factor must be a positive integer")
         max_tcspc_channels = 2**15  # dtime has 15-bit resolution
@@ -437,12 +466,8 @@ class ImageReconstructor:
         # mismatch (lines off the nearest frame boundary), action
         self.frame_sync_events = []
 
-        # Line duration in nsync units. Taken from the config or estimated
-        # from the first LINE_DURATION_ESTIMATE_LINES lines; events are
-        # buffered until then.
-        self.line_duration = config.line_duration
-        self._estimate_buffer = []
-        self._estimate_line_starts = 0
+        # Line duration in nsync units
+        self.line_duration = int(config.line_duration)
 
         self._finished = False  # flag: stop processing when max frames reached
 
@@ -468,15 +493,6 @@ class ImageReconstructor:
             raise TypeError(
                 f"Expected events with dtype {event_dtype}, got {events.dtype}"
             )
-
-        if self.line_duration is None:
-            # Buffer until enough lines are available for a chunk-size
-            # independent estimate of the line duration
-            self._estimate_buffer.append(events)
-            self._estimate_line_starts += len(self._resolve_markers(events)[1])
-            if self._estimate_line_starts <= LINE_DURATION_ESTIMATE_LINES:
-                return
-            events = self._estimate_line_duration()
 
         self._process(events)
 
@@ -533,43 +549,6 @@ class ImageReconstructor:
             self.config.line_stop_marker_channel,
         )
 
-    def _estimate_line_duration(self) -> np.ndarray:
-        """Set the line duration from the buffered events; return them.
-
-        Only markers up to the (LINE_DURATION_ESTIMATE_LINES + 1)-th line
-        start are used, so the estimate does not depend on how the stream is
-        chunked. The value is also stored in config.line_duration.
-        """
-        events = (
-            np.concatenate(self._estimate_buffer)
-            if self._estimate_buffer
-            else np.empty((0,), dtype=event_dtype)
-        )
-        self._estimate_buffer = []
-        frame_m, start_m, stop_m = self._resolve_markers(events)
-        starts = start_m["nsync"][: LINE_DURATION_ESTIMATE_LINES + 1]
-        duration = None
-        if len(starts) >= 2:
-            last = starts[-1]
-            frames = frame_m["nsync"][frame_m["nsync"] <= last]
-            stops = stop_m["nsync"][stop_m["nsync"] <= last]
-            _, duration = compute_line_duration(frames, starts, stops)
-            if duration is None:
-                # Frame markers left no complete line in the analysed window
-                _, duration = compute_line_duration(frames[:0], starts, stops)
-        if duration is None:
-            warnings.warn(
-                f"Line duration could not be estimated from "
-                f"{len(starts)} line start marker(s); no photons are binned.",
-                DataQualityWarning,
-                stacklevel=3,
-            )
-            duration = 0
-        self.line_duration = int(duration)
-        # Read back by callers (e.g. napari-flopa) to report the duration
-        self.config.line_duration = self.line_duration
-        return events
-
     def _carry_mask(self, nsync: np.ndarray, last_nsync: int) -> np.ndarray:
         """Photons that may belong to an open line or to a later line.
 
@@ -594,8 +573,6 @@ class ImageReconstructor:
         return (n >= first) & ((n < end) | later)
 
     def finalize(self):
-        if self.line_duration is None:
-            self._process(self._estimate_line_duration())
         self._finalize_frame_sync()
         self._flush_open_lines()
 
@@ -959,10 +936,9 @@ class ImageReconstructor:
         """Compare one frame marker with the frame boundary nearest to it."""
         lines_per_frame = self.config.lines_per_frame
         rel = lines_before - int(self._line_offset(lines_before))
-        frame = int(np.floor(rel / lines_per_frame + 0.5))
+        frame, mismatch = frame_boundary_mismatch(rel, lines_per_frame)
         if frame > self.config.frames:
             return  # beyond the reconstructed range
-        mismatch = rel - frame * lines_per_frame
 
         if mismatch == 0:
             action = "ok"
@@ -1268,12 +1244,22 @@ class SegmentReconstructor:
         # )
 
         if self.config.line_duration is None:
-            _, self.config.line_duration = compute_line_duration(
+            # A single chunk, so the estimate uses this chunk only. Its line
+            # offset within a frame is unknown: only frame markers exclude
+            # the intervals between frames. Callers with a reader can run
+            # prescan_first_frame instead, as for ImageReconstructor.
+            estimate = estimate_line_duration(
                 frame_markers["nsync"],
                 start_markers["nsync"],
                 stop_markers["nsync"],
             )
-
+            if estimate.duration is None:
+                return self._empty_dataset()
+            self.config.line_duration = estimate.duration
+        else:
+            self._check_line_duration(
+                start_markers["nsync"], frame_markers["nsync"]
+            )
 
         if self.config.line_duration <= 0:
             return self._empty_dataset()
@@ -1300,6 +1286,23 @@ class SegmentReconstructor:
                 "frame_break": np.arange(len(frame_break_lines)),
             },
         )
+
+    def _check_line_duration(
+        self, start_nsyncs: NDArray[np.uint64], frame_nsyncs: NDArray[np.uint64]
+    ) -> None:
+        """Warn if the given line duration exceeds the chunk's line period."""
+        periods = within_frame_intervals(start_nsyncs, frame_nsyncs)
+        if len(periods) == 0:
+            return
+        period = float(np.median(periods))
+        if self.config.line_duration > period:
+            warnings.warn(
+                f"line_duration={self.config.line_duration} exceeds the line "
+                f"period {period:.0f} (median start-to-start interval, nsync "
+                f"units) of this chunk; consecutive line windows overlap.",
+                ScanConfigWarning,
+                stacklevel=3,
+            )
 
     def _find_frame_breaks(
         self, frame_nsyncs: NDArray[np.uint64], start_nsyncs: NDArray[np.uint64]

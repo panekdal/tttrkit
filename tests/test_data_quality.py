@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from tttrkit.ptuio.decoder import event_dtype
+from tttrkit.ptuio.prescan import prescan_first_frame
 from tttrkit.ptuio.reconstructor import (
     DataQualityWarning,
     FrameSyncWarning,
@@ -34,14 +35,17 @@ def _photon_in_line(f, l, dtime=10, channel=0):
 def run(events, chunk=None, tcspc_channels=1024, **cfg):
     kw = dict(lines=LINES, pixels=PIXELS, frames=FRAMES, max_detector=2)
     kw.update(cfg)
-    rec = ImageReconstructor(
-        ScanConfig(**kw), outputs=["photon_count"], tcspc_channels=tcspc_channels
-    )
+    config = ScanConfig(**kw)
     step = chunk or len(events)
+    chunks = [events[a : a + step] for a in range(0, len(events), step)]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        for a in range(0, len(events), step):
-            rec.update(events[a : a + step])
+        prescan_first_frame(chunks, config)
+        rec = ImageReconstructor(
+            config, outputs=["photon_count"], tcspc_channels=tcspc_channels
+        )
+        for c in chunks:
+            rec.update(c)
         ds = rec.finalize()
     quality = [w for w in caught if issubclass(w.category, DataQualityWarning)]
     return ds, quality
@@ -119,13 +123,17 @@ def test_markers_with_unconfigured_inputs():
 
 
 def test_unestimated_line_duration_is_a_data_quality_warning():
-    # a single line start marker: no line duration, nothing binned
+    # a single line start marker: the pre-scan cannot estimate the line
+    # duration and warns; the reconstructor refuses to run without it
     events = make_stream()
     line_markers = (events["special"] == 1) & np.isin(events["channel"], [1, 2])
     drop = np.flatnonzero(line_markers)[1:]
-    ds, quality = run(np.delete(events, drop))
-    assert any("could not be estimated" in str(w.message) for w in quality)
-    assert ds.attrs["photons_in_lines"] == 0
+    config = ScanConfig(lines=LINES, pixels=PIXELS, frames=FRAMES)
+    with pytest.warns(DataQualityWarning, match="could not be estimated"):
+        prescan_first_frame([np.delete(events, drop)], config)
+    assert config.line_duration is None
+    with pytest.raises(ValueError, match="line_duration is not set"):
+        ImageReconstructor(config)
 
 
 def test_data_beyond_configured_frames_is_recorded():
