@@ -1,0 +1,26 @@
+{
+  "scan": {
+    "frames": 4,
+    "lines": 500,
+    "pixels": 500,
+    "sequences": 2,
+    "accumulations": [
+      1,
+      3
+    ],
+    "max_detector": 8,
+    "bidirectional": false,
+    "harmonic_scan": false,
+    "frame_start_marker": 4,
+    "line_start_marker": 1,
+    "line_stop_marker": 2
+  },
+  "ptu_filename": "abberior_f4_seq1_3.ptu",
+  "provenance": {
+    "lines": "user",
+    "pixels": "user",
+    "frames": "user",
+    "max_detector": "user",
+    "sequences": "user"
+  }
+}

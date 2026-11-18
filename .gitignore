@@ -8,4 +8,7 @@ src/tttrkit/_version.py
 development/
 build/
 .vscode/
-tests/realdata_samples/
+# Real-data samples: configs and fingerprints are tracked, the data is not
+tests/realdata_samples/**/*.ptu
+tests/realdata_samples/corpus_fingerprints/
+*.bak

@@ -1,0 +1,26 @@
+{
+  "scan": {
+    "frames": 1,
+    "lines": 512,
+    "pixels": 512,
+    "sequences": 1,
+    "accumulations": [
+      16
+    ],
+    "max_detector": 2,
+    "bidirectional": true,
+    "harmonic_scan": false,
+    "frame_start_marker": 4,
+    "line_start_marker": 1,
+    "line_stop_marker": 2,
+    "line_stop_marker_delay": 1.4035e-05
+  },
+  "ptu_filename": "zeiss_plus1_resync.ptu",
+  "provenance": {
+    "lines": "inferred",
+    "pixels": "inferred",
+    "frames": "inferred",
+    "max_detector": "inferred",
+    "sequences": "inferred"
+  }
+}

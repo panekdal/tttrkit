@@ -1,0 +1,25 @@
+{
+  "scan": {
+    "frames": 5,
+    "lines": 100,
+    "pixels": 100,
+    "sequences": 1,
+    "accumulations": [
+      4
+    ],
+    "max_detector": 2,
+    "bidirectional": false,
+    "harmonic_scan": false,
+    "frame_start_marker": 4,
+    "line_start_marker": 1,
+    "line_stop_marker": 2
+  },
+  "ptu_filename": "abberior_value3_markers.ptu",
+  "provenance": {
+    "lines": "inferred",
+    "pixels": "inferred",
+    "frames": "inferred",
+    "max_detector": "inferred",
+    "sequences": "inferred"
+  }
+}

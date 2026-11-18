@@ -1,0 +1,22 @@
+{
+  "scan": {
+    "frames": 1,
+    "lines": 512,
+    "pixels": 512,
+    "sequences": 1,
+    "accumulations": [
+      1
+    ],
+    "max_detector": 1,
+    "bidirectional": true,
+    "harmonic_scan": true,
+    "frame_start_marker": 4,
+    "line_start_marker": 1,
+    "line_stop_marker": 2,
+    "laser_duty": 0.6,
+    "line_start_marker_delay": 0.0,
+    "line_stop_marker_delay": -3.9869e-05,
+    "tcspc_bins": 331
+  },
+  "ptu_filename": "leica_bidi_harmonic.ptu"
+}
