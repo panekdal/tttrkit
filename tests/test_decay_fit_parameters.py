@@ -54,13 +54,13 @@ def test_reconvolution_accepts_and_returns_lifetime_parameters(fit_data):
 
 def test_tail_fit_accepts_and_returns_lifetime_parameters(fit_data):
     time, decay, _irf, initial = fit_data
-    fitted, fit, residuals, _optimizer_result = fit_decay_tail(
+    result = fit_decay_tail(
         time, decay, (0, len(time)), initial
     )
 
-    assert isinstance(fitted, LifetimeParameters)
-    assert fitted.n_exponentials == 2
-    assert fit.shape == residuals.shape == decay.shape
+    assert isinstance(result["fit_parameters"], LifetimeParameters)
+    assert result["fit_parameters"].n_exponentials == 2
+    assert result["fit"].shape == result["residuals"].shape == decay.shape
 
 
 def test_fits_work_in_seconds_and_preserve_units():
@@ -69,14 +69,16 @@ def test_fits_work_in_seconds_and_preserve_units():
     decay = true.decay(time)
     guess = LifetimeParameters([400.0, 300.0], [0.7e-9, 2.0e-9], background=1.0)
 
-    fitted, _fit, _res, _opt = fit_decay_tail(
+    result = fit_decay_tail(
         time, np.random.default_rng(0).poisson(decay).astype(float),
         (0, len(time)), guess, offset=0.0,
     )
 
-    np.testing.assert_allclose(np.sort(fitted.taus), true.taus, rtol=0.15)
-    assert fitted.taus.max() < 1e-6
-    g, s = fitted.theoretical_phasor(80e6)
+    
+
+    np.testing.assert_allclose(np.sort(result["fit_parameters"].taus), true.taus, rtol=0.15)
+    assert result["fit_parameters"].taus.max() < 1e-6
+    g, s = result["fit_parameters"].theoretical_phasor(80e6)
     assert 0 < s < 1 and 0 < g < 1
 
 
