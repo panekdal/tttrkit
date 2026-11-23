@@ -1,6 +1,6 @@
 {
   "scan": {
-    "frames": 4,
+    "frames": 3,
     "lines": 75,
     "pixels": 75,
     "sequences": 1,
@@ -12,14 +12,8 @@
     "harmonic_scan": false,
     "frame_start_marker": 4,
     "line_start_marker": 1,
-    "line_stop_marker": 2
+    "line_stop_marker": 2,
+    "tcspc_bins": 636
   },
-  "ptu_filename": "abberior_missing_line_markers.ptu",
-  "provenance": {
-    "lines": "inferred",
-    "pixels": "inferred",
-    "frames": "inferred",
-    "max_detector": "inferred",
-    "sequences": "inferred"
-  }
+  "ptu_filename": "abberior_missing_line_markers.ptu"
 }

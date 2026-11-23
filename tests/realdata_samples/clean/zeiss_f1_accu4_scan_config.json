@@ -7,19 +7,13 @@
     "accumulations": [
       4
     ],
-    "max_detector": 8,
+    "max_detector": 2,
     "bidirectional": false,
     "harmonic_scan": false,
     "frame_start_marker": 4,
     "line_start_marker": 1,
-    "line_stop_marker": 2
+    "line_stop_marker": 2,
+    "tcspc_bins": 401
   },
-  "ptu_filename": "zeiss_f1_accu4.ptu",
-  "provenance": {
-    "lines": "inferred",
-    "pixels": "inferred",
-    "frames": "inferred",
-    "max_detector": "inferred",
-    "sequences": "inferred"
-  }
+  "ptu_filename": "zeiss_f1_accu4.ptu"
 }

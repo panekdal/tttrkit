@@ -59,7 +59,7 @@
     {
       "path": "anomalies/abberior_missing_line_markers.ptu",
       "chunk_sizes": [1000000, 99991],
-      "expect": {"frame_sync": {"ok": 1, "resync": 3}}
+      "expect": {"frame_sync": {"ok": 1, "resync": 2}}
     },
     {
       "path": "anomalies/zeiss_plus1_resync.ptu",

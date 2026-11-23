@@ -7,19 +7,13 @@
     "accumulations": [
       1
     ],
-    "max_detector": 8,
+    "max_detector": 2,
     "bidirectional": false,
     "harmonic_scan": false,
     "frame_start_marker": 4,
     "line_start_marker": 1,
-    "line_stop_marker": 2
+    "line_stop_marker": 2,
+    "tcspc_bins": 401
   },
-  "ptu_filename": "zeiss_f1_start_glitch.ptu",
-  "provenance": {
-    "lines": "user",
-    "pixels": "user",
-    "frames": "user",
-    "max_detector": "user",
-    "sequences": "user"
-  }
+  "ptu_filename": "zeiss_f1_start_glitch.ptu"
 }
