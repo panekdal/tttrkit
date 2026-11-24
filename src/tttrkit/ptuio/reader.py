@@ -25,14 +25,23 @@ class TTTRReader:
             self._pos = f.tell()
         return data
 
-    def iter_chunks(self, chunk_size=1000000):
+    def iter_chunks(self, chunk_size=1000000, start=None):
+        """Yield raw records in chunks of up to chunk_size.
+
+        By default reading starts at the read position, which advances with
+        each chunk. With ``start`` (a byte offset, e.g. ``self.offset`` for
+        the start of the data) reading starts there and the read position
+        is left untouched.
+        """
+        advance = start is None
         with open(self.path, "rb") as f:
-            f.seek(self._pos)
+            f.seek(self._pos if advance else start)
             while True:
                 chunk = np.fromfile(f, dtype=self.dtype, count=chunk_size)
                 if len(chunk) == 0:
                     break
-                self._pos = f.tell()
+                if advance:
+                    self._pos = f.tell()
                 yield chunk
 
 

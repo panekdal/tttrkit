@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from tttrkit.ptuio.decoder import event_dtype
-from tttrkit.ptuio.prescan import prescan_first_frame
+from tttrkit.ptuio.prescan import prescan_events
 from tttrkit.ptuio.reconstructor import (
     FrameSyncWarning,
     ImageReconstructor,
@@ -76,7 +76,7 @@ def reconstruct(events, chunk=None, **cfg):
     chunks = [events[a:b] for a, b in zip(bounds[:-1], bounds[1:]) if b > a]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        scan = prescan_first_frame(chunks, config)
+        scan = prescan_events(chunks, config)
         rec = ImageReconstructor(
             config, outputs=["mean_arrival_time"], tcspc_channels=1024
         )

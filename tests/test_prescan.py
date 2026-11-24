@@ -5,7 +5,7 @@ import warnings
 import numpy as np
 import pytest
 
-from tttrkit.ptuio.prescan import prescan_first_frame
+from tttrkit.ptuio.prescan import prescan_events
 from tttrkit.ptuio.reconstructor import (
     ScanConfig,
     ScanConfigWarning,
@@ -26,7 +26,7 @@ def scan(events, chunk=None, **cfg):
     chunks = [events[a : a + step] for a in range(0, len(events), step)]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = prescan_first_frame(chunks, config)
+        result = prescan_events(chunks, config)
     issued = [w for w in caught if issubclass(w.category, ScanConfigWarning)]
     return result, config, issued
 
@@ -203,7 +203,7 @@ def test_reads_only_the_first_frame():
             yield events[a : a + 10]
 
     config = ScanConfig(lines=LINES, frames=40)
-    result = prescan_first_frame(chunks(), config)
+    result = prescan_events(chunks(), config)
     assert result.line_starts == 130 and not result.end_of_data
     assert len(consumed) * 10 < len(events) / 2
 

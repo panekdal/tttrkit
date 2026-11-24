@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from tttrkit.ptuio.decoder import event_dtype
-from tttrkit.ptuio.prescan import prescan_first_frame
+from tttrkit.ptuio.prescan import prescan_events
 from tttrkit.ptuio.reconstructor import (
     DataQualityWarning,
     FrameSyncWarning,
@@ -40,7 +40,7 @@ def run(events, chunk=None, tcspc_channels=1024, **cfg):
     chunks = [events[a : a + step] for a in range(0, len(events), step)]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        prescan_first_frame(chunks, config)
+        prescan_events(chunks, config)
         rec = ImageReconstructor(
             config, outputs=["photon_count"], tcspc_channels=tcspc_channels
         )
@@ -130,7 +130,7 @@ def test_unestimated_line_duration_is_a_data_quality_warning():
     drop = np.flatnonzero(line_markers)[1:]
     config = ScanConfig(lines=LINES, pixels=PIXELS, frames=FRAMES)
     with pytest.warns(DataQualityWarning, match="could not be estimated"):
-        prescan_first_frame([np.delete(events, drop)], config)
+        prescan_events([np.delete(events, drop)], config)
     assert config.line_duration is None
     with pytest.raises(ValueError, match="line_duration is not set"):
         ImageReconstructor(config)

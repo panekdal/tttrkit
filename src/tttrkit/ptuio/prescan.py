@@ -18,6 +18,9 @@ Typical use::
     rec = ImageReconstructor(config)
     for chunk in reader.iter_chunks():
         rec.update(corrector.correct(chunk))
+
+prescan_events does the same for event chunks already decoded and
+overflow-corrected, e.g. synthetic data.
 """
 
 from collections.abc import Iterable
@@ -72,7 +75,7 @@ class FirstFrameScan:
 
 
 def prescan_first_frame(
-    source: TTTRReader | Iterable[np.ndarray],
+    reader: TTTRReader,
     config: ScanConfig,
     *,
     wrap: int | None = None,
@@ -82,40 +85,45 @@ def prescan_first_frame(
     """Check ``config`` against the first frame; fill in its line duration.
 
     Args:
-        source: A TTTRReader, read from the start of the data with a fresh
-            overflow corrector (its read position is restored afterwards),
-            or an iterable of overflow-corrected event chunks
-            (``event_dtype``), consumed only as far as needed.
+        reader: Read from the start of the data with a fresh overflow
+            corrector; its read position is left untouched.
         config: The ScanConfig to check. If ``config.line_duration`` is
             None, it is set to the estimate (if one could be made);
             otherwise it is checked: it must not exceed the line period.
-        wrap: Overflow wraparound for a reader source (default: the header
-            tag TTResultFormat_WrapAround, else 1024).
-        chunk_size: Records per read for a reader source.
+        wrap: Overflow wraparound (default: the header tag
+            TTResultFormat_WrapAround, else 1024).
+        chunk_size: Records per read.
         warn: Issue every problem found as a ScanConfigWarning.
 
     Returns:
         A FirstFrameScan. If the line duration could not be estimated,
         config.line_duration stays None and ImageReconstructor refuses it.
     """
-    if isinstance(source, TTTRReader):
-        if wrap is None:
-            wrap = source.header.tags.get("TTResultFormat_WrapAround", 1024)
-        corrector = T3OverflowCorrector(wraparound=wrap)
-        position = source._pos
-        source.reset()
-        raw = source.iter_chunks(chunk_size)
-        try:
-            scan = _scan((corrector.correct(c) for c in raw), config)
-        finally:
-            raw.close()
-            source._pos = position
-    else:
-        scan = _scan(source, config)
+    if wrap is None:
+        wrap = reader.header.tags.get("TTResultFormat_WrapAround", 1024)
+    corrector = T3OverflowCorrector(wraparound=wrap)
+    raw = reader.iter_chunks(chunk_size, start=reader.offset)
+    chunks = (corrector.correct(c) for c in raw)
+    return _report(_scan(chunks, config), warn)
 
+
+def prescan_events(
+    chunks: Iterable[np.ndarray],
+    config: ScanConfig,
+    *,
+    warn: bool = True,
+) -> FirstFrameScan:
+    """As :func:`prescan_first_frame`, for overflow-corrected event chunks
+    (``event_dtype``) starting at the start of the data; they are consumed
+    only as far as needed."""
+    return _report(_scan(chunks, config), warn)
+
+
+def _report(scan: FirstFrameScan, warn: bool) -> FirstFrameScan:
     if warn:
         for issue in scan.issues:
-            warnings.warn(issue, ScanConfigWarning, stacklevel=2)
+            # Attributed to the caller of the public function
+            warnings.warn(issue, ScanConfigWarning, stacklevel=3)
     return scan
 
 
