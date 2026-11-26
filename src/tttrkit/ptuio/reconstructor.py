@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+import copy
 import warnings
 import numpy as np
 import xarray as xr
@@ -114,7 +115,8 @@ class ImageReconstructor:
         Initialize an image reconstructor.
 
         Parameters:
-            config (ScanConfig): Scan configuration object.
+            config (ScanConfig): Scan configuration object. It is copied:
+                changing it afterwards does not affect this reconstructor.
 
             roi_mask (ndarray, optional): Binary mask of shape (lines, pixels)
                 to restrict processing to specific regions.
@@ -174,10 +176,13 @@ class ImageReconstructor:
         tcspc_channels = int(
             np.ceil(tcspc_channels / tcspc_bin_factor) * tcspc_bin_factor
         )
-        self.config = config
+        # A copy: the output arrays and the frame sync state are built for
+        # this config, so later changes to the caller's config must not
+        # reach a running reconstruction. Reconstruct again for a new one.
+        self.config = copy.deepcopy(config)
         self.shape = (
             config.frames,
-            config.lines * config._total_accumulations,
+            config.lines_per_frame,
             config.pixels,
             config.max_detector,
         )
@@ -601,7 +606,7 @@ class ImageReconstructor:
         stretched_mask = np.zeros(
             (
                 self.config.frames,
-                self.config.lines * self.config._total_accumulations,
+                self.config.lines_per_frame,
                 self.config.pixels,
             ),
             dtype=bool,
@@ -609,7 +614,7 @@ class ImageReconstructor:
 
         for f_idx in range(self.config.frames):
             stretched_mask[f_idx, :, :] = np.repeat(
-                base_mask, repeats=self.config._total_accumulations, axis=0
+                base_mask, repeats=self.config.total_accumulations, axis=0
             )
 
         return stretched_mask

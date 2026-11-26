@@ -21,6 +21,24 @@ class ScanConfigWarning(DataQualityWarning):
     """
 
 
+def _marker_channel(name: str) -> property:
+    """A ScanConfig attribute holding one physical marker-input bit."""
+    attr = f"_{name}"
+
+    def fset(self, value: int) -> None:
+        if not isinstance(value, (int, np.integer)):
+            raise TypeError(f"{name} must be an integer marker bit")
+        if value not in (1, 2, 4, 8):
+            raise ValueError(f"{name} must be one of 1, 2, 4, or 8")
+        setattr(self, attr, int(value))
+
+    return property(
+        lambda self: getattr(self, attr),
+        fset,
+        doc="Marker input bit (1, 2, 4 or 8).",
+    )
+
+
 class ScanConfig:
     """Configuration for image reconstruction.
 
@@ -82,12 +100,8 @@ class ScanConfig:
         frame_sync: str = "resync",  # "count", "validate" or "resync"
         frame_sync_tolerance: float = 0.1,  # fraction of lines_per_frame
     ):
-        if frame_sync not in FRAME_SYNC_MODES:
-            raise ValueError(
-                f"frame_sync must be one of {FRAME_SYNC_MODES}, got {frame_sync!r}"
-            )
-        if not 0 < frame_sync_tolerance < 0.5:
-            raise ValueError("frame_sync_tolerance must be in (0, 0.5)")
+        # Validated and normalized attributes are properties; their setters
+        # also check later assignments
         self.frame_sync = frame_sync
         self.frame_sync_tolerance = frame_sync_tolerance
         self.lines = lines
@@ -99,40 +113,69 @@ class ScanConfig:
         self.line_start_marker_delay = line_start_marker_delay
         self.line_stop_marker_delay = line_stop_marker_delay
         self.line_duration = line_duration
-
-        # Normalize line_accumulations to tuple
-        if isinstance(line_accumulations, int):
-            self.line_accumulations = (line_accumulations,)
-        else:
-            self.line_accumulations = tuple(line_accumulations)
-
-        self.num_sequences = len(self.line_accumulations)
+        self.line_accumulations = line_accumulations
         self.bidirectional = bidirectional
-        self._total_accumulations = sum(self.line_accumulations)
+        self.frame_start_marker_channel = frame_start_marker_channel
+        self.line_start_marker_channel = line_start_marker_channel
+        self.line_stop_marker_channel = line_stop_marker_channel
 
-        self.frame_start_marker_channel = self._validate_marker_mask(
-            frame_start_marker_channel, "frame_start_marker_channel"
-        )
-        self.line_start_marker_channel = self._validate_marker_mask(
-            line_start_marker_channel, "line_start_marker_channel"
-        )
-        self.line_stop_marker_channel = self._validate_marker_mask(
-            line_stop_marker_channel, "line_stop_marker_channel"
-        )
+    frame_start_marker_channel = _marker_channel("frame_start_marker_channel")
+    line_start_marker_channel = _marker_channel("line_start_marker_channel")
+    line_stop_marker_channel = _marker_channel("line_stop_marker_channel")
 
-    @staticmethod
-    def _validate_marker_mask(marker_mask: int, name: str) -> int:
-        """Validate one physical marker-input bit used for a scan role."""
-        if not isinstance(marker_mask, (int, np.integer)):
-            raise TypeError(f"{name} must be an integer marker bit")
-        if marker_mask not in (1, 2, 4, 8):
-            raise ValueError(f"{name} must be one of 1, 2, 4, or 8")
-        return int(marker_mask)
+    @property
+    def frame_sync(self) -> str:
+        """How frame markers are used: "count", "validate" or "resync"."""
+        return self._frame_sync
+
+    @frame_sync.setter
+    def frame_sync(self, value: str) -> None:
+        if value not in FRAME_SYNC_MODES:
+            raise ValueError(
+                f"frame_sync must be one of {FRAME_SYNC_MODES}, got {value!r}"
+            )
+        self._frame_sync = value
+
+    @property
+    def frame_sync_tolerance(self) -> float:
+        """Largest frame marker mismatch "resync" corrects, as a fraction of
+        lines_per_frame."""
+        return self._frame_sync_tolerance
+
+    @frame_sync_tolerance.setter
+    def frame_sync_tolerance(self, value: float) -> None:
+        if not 0 < value < 0.5:
+            raise ValueError("frame_sync_tolerance must be in (0, 0.5)")
+        self._frame_sync_tolerance = value
+
+    @property
+    def line_accumulations(self) -> tuple[int, ...]:
+        """Accumulations of each scan sequence; an int is one sequence."""
+        return self._line_accumulations
+
+    @line_accumulations.setter
+    def line_accumulations(self, value) -> None:
+        if isinstance(value, (int, np.integer)):
+            value = (value,)
+        value = tuple(int(a) for a in value)
+        if not value or min(value) < 1:
+            raise ValueError(
+                f"line_accumulations must be positive integers, got {value}"
+            )
+        self._line_accumulations = value
+
+    @property
+    def num_sequences(self) -> int:
+        return len(self.line_accumulations)
+
+    @property
+    def total_accumulations(self) -> int:
+        return sum(self.line_accumulations)
 
     @property
     def lines_per_frame(self) -> int:
         """Number of line start markers per frame (lines x accumulations)."""
-        return self.lines * self._total_accumulations
+        return self.lines * self.total_accumulations
 
     @property
     def frame_sync_tolerance_lines(self) -> int:

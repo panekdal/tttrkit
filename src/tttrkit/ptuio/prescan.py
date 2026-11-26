@@ -170,7 +170,7 @@ def _check_frames(scan, config, frame_lines, n, end_of_data):
     tolerance = config.frame_sync_tolerance_lines
     geometry = (
         f"lines_per_frame = lines x sum(line_accumulations) = "
-        f"{config.lines} x {config._total_accumulations} = {lpf}"
+        f"{config.lines} x {config.total_accumulations} = {lpf}"
     )
     positions = np.unique(frame_lines)
     # Line 0 starts frame 0, as in the frame sync. Spacings within the
