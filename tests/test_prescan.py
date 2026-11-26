@@ -50,8 +50,7 @@ def with_frame_pauses(events, lines, pause):
 @pytest.mark.parametrize("chunk", [None, 1, 7])
 def test_clean_stream(frame_marker, chunk):
     result, config, issued = scan(make_stream(frame_marker=frame_marker), chunk)
-    assert result.verdict == "ok"
-    assert issued == []
+    assert issued == [] and result.issues == []
     assert result.line_duration == DURATION
     assert result.line_duration_source == "stop_markers"
     assert config.line_duration == DURATION  # filled in
@@ -103,33 +102,45 @@ def test_wrong_lines_per_frame(frame_marker, lines):
     # The data has 8 lines per frame
     events = make_stream(frames=6, frame_marker=frame_marker)
     result, _, issued = scan(events, lines=lines, frames=6)
-    assert result.verdict == "mismatch"
     assert result.measured_lines_per_frame == LINES
-    assert result.suggestions[0] == (LINES, 1)
-    assert len(issued) == 1 and "(8, 1)" in str(issued[0].message)
+    assert len(issued) == 1 and "8 line starts apart" in str(issued[0].message)
 
 
 def test_accumulations_count_in_lines_per_frame():
     # 8 line starts per frame = 4 lines x 2 accumulations
-    result, _, issued = scan(make_stream(), lines=4, line_accumulations=(2,))
-    assert result.verdict == "ok" and issued == []
+    _, _, issued = scan(make_stream(), lines=4, line_accumulations=(2,))
+    assert issued == []
 
 
 def test_data_not_beginning_with_a_frame():
     # The first 3 lines (and the first frame marker) are missing
     events = make_stream(frames=4)
     events = events[events["nsync"] >= 5 * PERIOD + 3 * PERIOD - PERIOD // 10]
-    result, _, issued = scan(events, frames=4)
-    assert result.verdict == "mismatch"
-    assert result.frame_marker_lines[:2] == [5, 13]
-    assert "does not begin with a frame" in str(issued[0].message)
+    # frame markers after 5, 13, 21 line starts, none near 8
+    _, _, issued = scan(events, frames=4)
+    assert len(issued) == 1
+    assert "No frame marker within 1 line(s) of line start 8" in str(
+        issued[0].message
+    )
 
 
 def test_glitch_frame_marker_is_left_to_frame_sync():
     events = make_stream(extra_frame_marker=(0, 3))
-    result, _, issued = scan(events)
-    assert result.verdict == "ok" and issued == []
-    assert 3 in result.frame_marker_lines
+    _, _, issued = scan(events)
+    assert issued == []
+
+
+def test_glitch_next_to_the_only_frame_marker_is_left_to_frame_sync():
+    # Frame markers after 0 and 1 line starts: not frames 1 line long
+    events = make_stream(frames=1, extra_frame_marker=(0, 1))
+    result, _, issued = scan(events, frames=1)
+    assert issued == [] and result.measured_lines_per_frame is None
+
+
+def test_single_frame_end_marker_measures_the_frame():
+    # Line 0 starts frame 0, so one end-of-frame marker spans a frame
+    result, _, issued = scan(make_stream(frames=1, frame_marker="end"), frames=1)
+    assert issued == [] and result.measured_lines_per_frame == LINES
 
 
 def test_spurious_line_marker_before_the_first_frame_marker():
@@ -143,53 +154,51 @@ def test_spurious_line_marker_before_the_first_frame_marker():
         order="nsync",
         kind="stable",
     )
-    result, _, issued = scan(events, frames=1)
-    assert result.frame_marker_lines == [1]
-    assert result.verdict == "ok" and issued == []
+    _, _, issued = scan(events, frames=1)
+    assert issued == []
 
 
 def test_dropped_line_marker_in_the_first_frame_is_left_to_frame_sync():
     # 39 line starts in frame 0, 40 configured: within the tolerance (4)
     lines = 40
     events = make_stream(frames=6, lines=lines, drop_line=(0, 5))
-    result, _, issued = scan(events, lines=lines, frames=6)
-    assert result.frame_marker_lines[:2] == [0, 39]
-    assert result.verdict == "ok" and issued == []
+    _, _, issued = scan(events, lines=lines, frames=6)
+    assert issued == []
 
 
 def test_without_frame_markers():
     # more lines than the scan reads: nothing to check the frames against
     result, _, issued = scan(make_stream(frames=20, frame_marker=None), frames=20)
-    assert result.verdict == "unverified" and issued == []
+    assert issued == [] and result.measured_lines_per_frame is None
     assert result.line_duration == DURATION
 
 
 def test_without_frame_markers_whole_frames_by_line_count():
     # the scan reaches the end of the data: 3 frames of 8 lines
-    result, _, issued = scan(make_stream(frame_marker=None))
-    assert result.verdict == "ok" and result.end_of_data and issued == []
+    _, _, issued = scan(make_stream(frame_marker=None))
+    assert issued == []
 
 
 def test_frame_sync_count_ignores_frame_markers():
     result, _, issued = scan(
         make_stream(frames=20), lines=4, frames=20, frame_sync="count"
     )
-    assert result.verdict == "unverified" and issued == []
-    assert result.frame_marker_lines == []
+    assert issued == [] and result.measured_lines_per_frame is None
 
 
 def test_fewer_lines_than_one_frame():
-    result, config, issued = scan(make_stream(frames=1), lines=16)
-    assert result.verdict == "too_few_lines"
-    assert result.end_of_data and result.line_starts == LINES
+    _, config, issued = scan(make_stream(frames=1), lines=16)
     assert len(issued) == 1
+    assert "holds 8 line start markers, fewer than one frame" in str(
+        issued[0].message
+    )
     # the line duration is still estimated from what there is
     assert config.line_duration == DURATION
 
 
 def test_single_frame_without_trailing_marker_is_ok():
-    result, _, issued = scan(make_stream(frames=1), frames=1)
-    assert result.verdict == "ok" and issued == []
+    _, _, issued = scan(make_stream(frames=1), frames=1)
+    assert issued == []
 
 
 def test_reads_only_the_first_frame():
@@ -204,7 +213,7 @@ def test_reads_only_the_first_frame():
 
     config = ScanConfig(lines=LINES, frames=40)
     result = prescan_events(chunks(), config)
-    assert result.line_starts == 130 and not result.end_of_data
+    assert result.issues == []
     assert len(consumed) * 10 < len(events) / 2
 
 

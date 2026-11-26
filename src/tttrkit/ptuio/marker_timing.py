@@ -1,4 +1,4 @@
-"""Analysis helpers for frame and line timing markers."""
+"""Frame and line timing from marker arrays (nsync units); no I/O, no config."""
 
 from dataclasses import dataclass
 
@@ -6,19 +6,31 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+def frame_boundary_mismatch(lines_before: int, lines_per_frame: int):
+    """(frame, mismatch) of a frame marker preceded by ``lines_before`` lines.
+
+    ``frame`` is the nearest frame boundary and ``mismatch`` the number of
+    lines the marker is off it (0 for a marker on a boundary). Shared by the
+    frame sync of ImageReconstructor and the first-frame pre-scan.
+    """
+    frame = int(np.floor(lines_before / lines_per_frame + 0.5))
+    return frame, lines_before - frame * lines_per_frame
+
+
 @dataclass(frozen=True)
 class StopMarkerTiming:
-    """Timing measurements derived from line-start and line-stop markers."""
+    """Start-to-stop timing of the lines that have a stop marker.
+
+    ``durations`` (start to stop) and ``paired_intervals`` (start to next
+    start) are per paired line; ``phases`` is their ratio.
+    """
 
     pair_count: int
     phases: NDArray[np.float64]
     durations: NDArray[np.int64]
-    intervals: NDArray[np.int64]
     paired_intervals: NDArray[np.int64]
     median_phase: float | None
     median_duration: float | None
-    median_interval: float | None
-    window: tuple[int | None, int | None]
 
 
 def _as_nsyncs(name: str, markers: NDArray[np.uint64]) -> NDArray[np.int64]:
@@ -49,47 +61,21 @@ def analyze_stop_marker_timing(
     starts = _as_nsyncs("start_nsyncs", start_nsyncs)
     stops = _as_nsyncs("stop_nsyncs", stop_nsyncs)
 
+    if len(frame):
+        starts = starts[starts >= frame[0]]
+        stops = stops[stops >= frame[0]]
     if len(frame) >= 2:
-        lower, upper = int(frame[0]), int(frame[1])
-    elif len(frame) == 1:
-        lower, upper = int(frame[0]), None
-    else:
-        lower, upper = None, None
-
-    if lower is not None:
-        starts = starts[starts >= lower]
-        stops = stops[stops >= lower]
-    if upper is not None:
-        starts = starts[starts < upper]
-        stops = stops[stops < upper]
+        starts = starts[starts < frame[1]]
+        stops = stops[stops < frame[1]]
 
     intervals = np.diff(starts)
-    empty_int = np.empty(0, dtype=np.int64)
-    empty_float = np.empty(0, dtype=np.float64)
-
-    if len(intervals) == 0:
-        return StopMarkerTiming(
-            pair_count=0,
-            phases=empty_float,
-            durations=empty_int,
-            intervals=intervals,
-            paired_intervals=empty_int,
-            median_phase=None,
-            median_duration=None,
-            median_interval=None,
-            window=(lower, upper),
-        )
-
     # Each line can use only a stop after its start and before its next start.
     stop_indices = np.searchsorted(stops, starts[:-1], side="right")
     paired = stop_indices < len(stops)
     paired[paired] &= stops[stop_indices[paired]] < starts[1:][paired]
 
-    paired_starts = starts[:-1][paired]
-    paired_stops = stops[stop_indices[paired]]
-    durations = paired_stops - paired_starts
+    durations = stops[stop_indices[paired]] - starts[:-1][paired]
     paired_intervals = intervals[paired]
-
     valid = (
         (durations > 0)
         & (paired_intervals > 0)
@@ -103,31 +89,11 @@ def analyze_stop_marker_timing(
         pair_count=len(durations),
         phases=phases,
         durations=durations,
-        intervals=intervals,
         paired_intervals=paired_intervals,
         median_phase=float(np.median(phases)) if len(phases) else None,
         median_duration=float(np.median(durations)) if len(durations) else None,
-        median_interval=float(np.median(intervals)),
-        window=(lower, upper),
     )
 
-def compute_line_duration(
-    frame_nsyncs,
-    start_nsyncs,
-    stop_nsyncs,
-    default_phase: float = 0.80,
-):
-    timing = analyze_stop_marker_timing(
-        frame_nsyncs, start_nsyncs, stop_nsyncs
-    )
-
-    if timing.pair_count:
-        return timing.median_phase, int(timing.median_duration)
-
-    if timing.median_interval is not None:
-        return default_phase, int(timing.median_interval * default_phase)
-
-    return None, None
 
 @dataclass(frozen=True)
 class LineDurationEstimate:
@@ -143,8 +109,6 @@ class LineDurationEstimate:
     duration: int | None
     source: str | None
     median_period: float | None
-    periods: int  # within-frame intervals behind median_period
-    pairs: int  # start/stop pairs behind a "stop_markers" estimate
 
 
 def within_frame_intervals(
@@ -202,18 +166,24 @@ def estimate_line_duration(
     )
     if timing.pair_count:
         return LineDurationEstimate(
-            int(timing.median_duration),
-            "stop_markers",
-            median_period,
-            len(periods),
-            timing.pair_count,
+            int(timing.median_duration), "stop_markers", median_period
         )
     if median_period is not None:
         return LineDurationEstimate(
-            int(median_period * default_phase),
-            "line_period",
-            median_period,
-            len(periods),
-            0,
+            int(median_period * default_phase), "line_period", median_period
         )
-    return LineDurationEstimate(None, None, None, 0, 0)
+    return LineDurationEstimate(None, None, None)
+
+
+def line_duration_issue(
+    line_duration: int, median_period: float | None
+) -> str | None:
+    """A message if ``line_duration`` exceeds the median line period, so that
+    consecutive line windows overlap; None otherwise."""
+    if median_period is None or line_duration <= median_period:
+        return None
+    return (
+        f"line_duration={line_duration} exceeds the line period "
+        f"{median_period:.0f} (median start-to-start interval within a "
+        f"frame, nsync units); consecutive line windows overlap."
+    )

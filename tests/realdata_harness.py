@@ -297,7 +297,7 @@ def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -
         },
         # informational only, not compared
         "prescan": None if scan is None else {
-            "verdict": scan.verdict,
+            "issues": len(scan.issues),
             "measured_lines_per_frame": scan.measured_lines_per_frame,
             "line_duration_source": scan.line_duration_source,
         },

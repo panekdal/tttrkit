@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from tttrkit.ptuio import utils
-from tttrkit.ptuio.reconstructor import ScanConfig
+from tttrkit.ptuio import calibration
+from tttrkit.ptuio.config import ScanConfig
 
 from test_frame_sync import PERIOD, make_stream
 
@@ -13,12 +13,12 @@ def prealign(events, monkeypatch):
     # The probe chunk comes from the reader; hand over the events instead.
     # line_duration is set, so no pre-scan reads the (absent) reader.
     monkeypatch.setattr(
-        utils, "_read_probe_chunk", lambda *args, **kwargs: (events, 0)
+        calibration, "_read_probe_chunk", lambda *args, **kwargs: (events, 0)
     )
     config = ScanConfig(
         lines=40, pixels=4, bidirectional=True, line_duration=PERIOD * 8 // 10
     )
-    return utils.estimate_bidirectional_prealign(
+    return calibration.estimate_bidirectional_prealign(
         None, config, laser_sync_rate=40e6, verbose=False
     )
 

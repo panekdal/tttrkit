@@ -10,7 +10,8 @@ PRESCAN_MIN_LINES lines when frames are small.
 
 The same pass checks the frame geometry: with frame markers, a marker must
 sit at every multiple of lines_per_frame (= lines x sum(line_accumulations))
-line starts, whether the hardware marks the frame start or its end.
+line starts, whether the hardware marks the frame start or its end. Problems
+are reported, not diagnosed; see :mod:`tttrkit.ptuio.diagnostics`.
 
 Typical use::
 
@@ -29,49 +30,41 @@ import warnings
 
 import numpy as np
 
+from .config import ScanConfig, ScanConfigWarning
 from .decoder import T3OverflowCorrector, resolve_markers
-from .marker_timing import estimate_line_duration
+from .marker_timing import (
+    estimate_line_duration,
+    frame_boundary_mismatch,
+    line_duration_issue,
+)
 from .reader import TTTRReader
-from .reconstructor import ScanConfig, ScanConfigWarning, frame_boundary_mismatch
 
 # Small frames: the line duration is estimated from the first frames that
 # hold at least this many lines, so that it rests on enough lines.
 PRESCAN_MIN_LINES = 128
-
-VERDICTS = ("ok", "mismatch", "too_few_lines", "unverified")
 
 
 @dataclass
 class FirstFrameScan:
     """Result of :func:`prescan_first_frame`.
 
-    verdict:
-        "ok"             the frame markers (or, at the end of the data, the
-                         line count) agree with lines_per_frame
-        "mismatch"       they do not; see ``issues`` and ``suggestions``
-        "too_few_lines"  the data ends before one frame is complete
-        "unverified"     no frame markers to check against (or
-                         frame_sync="count")
     line_duration_source:
         "config" (given, checked against the line period), "stop_markers"
         or "line_period" (estimated), None if it could not be estimated.
+    measured_lines_per_frame:
+        Most common spacing of the frame markers, in line starts; None
+        without two frame markers to measure (or with frame_sync="count").
     issues:
-        One message per problem found; each was also issued as a
-        ScanConfigWarning unless warn=False.
+        One message per problem found, empty if the data agrees with the
+        config; each was also issued as a ScanConfigWarning unless
+        warn=False. Without frame markers the frames are not checked.
     """
 
-    lines_per_frame: int
-    line_starts: int  # line start markers read
-    end_of_data: bool  # the data ended before the scan was complete
-    frame_marker_lines: list[int]  # line starts preceding each frame marker
-    measured_lines_per_frame: int | None
-    verdict: str
-    line_duration: int | None  # nsync units
-    line_duration_source: str | None
-    median_line_period: float | None  # within-frame lines, nsync units
+    line_duration: int | None = None  # nsync units
+    line_duration_source: str | None = None
+    median_line_period: float | None = None  # within-frame lines, nsync units
+    measured_lines_per_frame: int | None = None
     issues: list[str] = field(default_factory=list)
-    # (lines, total accumulations) pairs matching measured_lines_per_frame
-    suggestions: list[tuple[int, int]] = field(default_factory=list)
 
 
 def prescan_first_frame(
@@ -129,12 +122,10 @@ def _report(scan: FirstFrameScan, warn: bool) -> FirstFrameScan:
 
 def _scan(chunks: Iterable[np.ndarray], config: ScanConfig) -> FirstFrameScan:
     lpf = config.lines_per_frame
-    use_frame_markers = config.frame_sync != "count"
     # Lines for the line duration: whole frames, at least PRESCAN_MIN_LINES
     estimate_lines = lpf * max(1, -(-PRESCAN_MIN_LINES // lpf))
     # Read on a little, to find a frame marker that comes a few lines late
-    tolerance = int(np.ceil(max(1.0, config.frame_sync_tolerance * lpf)))
-    needed = estimate_lines + tolerance + 1
+    needed = estimate_lines + config.frame_sync_tolerance_lines + 1
 
     frames, starts, stops = [], [], []
     n_starts = 0
@@ -158,165 +149,92 @@ def _scan(chunks: Iterable[np.ndarray], config: ScanConfig) -> FirstFrameScan:
         return np.concatenate(arrays).astype(np.int64)
 
     starts = joined(starts)[:needed]
-    frames = joined(frames) if use_frame_markers else np.empty(0, np.int64)
+    frames = joined(frames) if config.frame_sync != "count" else joined([])
     stops = joined(stops)
     end_of_data = len(starts) < needed
     if not end_of_data:
         # Markers after the last line start read cannot be placed yet
         frames = frames[frames <= starts[-1]]
-    frame_lines = np.searchsorted(starts, frames, side="left")
 
-    scan = FirstFrameScan(
-        lines_per_frame=lpf,
-        line_starts=len(starts),
-        end_of_data=end_of_data,
-        frame_marker_lines=frame_lines.tolist(),
-        measured_lines_per_frame=None,
-        verdict="ok",
-        line_duration=None,
-        line_duration_source=None,
-        median_line_period=None,
-    )
-    _check_frames(scan, config, frame_lines, tolerance)
+    scan = FirstFrameScan()
+    frame_lines = np.searchsorted(starts, frames, side="left")
+    _check_frames(scan, config, frame_lines, len(starts), end_of_data)
     _line_duration(scan, config, frames, starts, stops, estimate_lines)
     return scan
 
 
-def _measured_lines_per_frame(positions: np.ndarray, tolerance: int):
-    """Most common spacing of frame markers, in line starts. Spacings within
-    the tolerance (a glitch next to a marker) are not frame lengths."""
-    spacings = np.diff(positions)
-    spacings = spacings[spacings > tolerance]
-    if len(spacings):
-        values, counts = np.unique(spacings, return_counts=True)
-        return int(values[np.argmax(counts)])
-    if len(positions) == 1 and positions[0] > 0:
-        return int(positions[0])
-    return None
-
-
-def _missing_boundary(positions, lpf, tolerance, n, end_of_data):
-    """First frame boundary within the scanned lines without a frame marker.
-
-    Follows the reconstruction (frame_sync="resync"): line 0 starts frame 0,
-    and a marker at most `tolerance` lines off a boundary realigns the line
-    count, so it marks a boundary; markers further off are glitches. After
-    each such marker, the next one must follow lines_per_frame (within the
-    tolerance) later, unless the scanned lines end before.
-    """
-    anchors, offset = [0], 0
-    for p in positions.tolist():
-        _, mismatch = frame_boundary_mismatch(p - offset, lpf)
-        if abs(mismatch) <= tolerance:
-            offset += mismatch
-            anchors.append(p)
-    for a, b in zip(anchors[:-1], anchors[1:]):
-        if b > a + lpf + tolerance:
-            return a + lpf
-    following = anchors[-1] + lpf
-    # The end of the data needs no marker (a frame-start marker would
-    # follow it); otherwise a marker up to `tolerance` lines late must be
-    # within the scanned lines.
-    last = n - 1 if end_of_data else n - 1 - tolerance
-    return following if following <= last else None
-
-
-def _suggestions(measured: int, config: ScanConfig) -> list[tuple[int, int]]:
-    """(lines, total accumulations) with lines x accumulations = measured,
-    the current total accumulations first."""
-    current = config._total_accumulations
-    totals = [current] + [a for a in range(1, 65) if a != current]
-    return [
-        (measured // a, a)
-        for a in totals
-        if measured % a == 0 and measured // a >= 8
-    ]
-
-
-def _check_frames(scan, config, frame_lines, tolerance):
-    lpf = scan.lines_per_frame
-    n = scan.line_starts
+def _check_frames(scan, config, frame_lines, n, end_of_data):
+    """Compare the frame markers (line starts preceding each) with
+    lines_per_frame."""
+    lpf = config.lines_per_frame
+    tolerance = config.frame_sync_tolerance_lines
     geometry = (
         f"lines_per_frame = lines x sum(line_accumulations) = "
         f"{config.lines} x {config._total_accumulations} = {lpf}"
     )
     positions = np.unique(frame_lines)
-    measured = _measured_lines_per_frame(positions, tolerance)
-    scan.measured_lines_per_frame = measured
+    # Line 0 starts frame 0, as in the frame sync. Spacings within the
+    # tolerance (a glitch next to a marker) are no frame lengths.
+    spacings = np.diff(np.union1d(0, positions))
+    lengths = spacings[spacings > tolerance]
+    if len(lengths):
+        values, counts = np.unique(lengths, return_counts=True)
+        scan.measured_lines_per_frame = int(values[np.argmax(counts)])
 
-    if scan.end_of_data and n < 2:
-        scan.verdict = "too_few_lines"
-        scan.issues.append(
-            f"The data holds {n} line start marker(s) on "
-            f"line_start_marker_channel={config.line_start_marker_channel}; "
-            f"check the marker channels."
-        )
-        return
-    if scan.end_of_data and n < lpf:
-        scan.verdict = "too_few_lines"
+    if end_of_data and n < lpf:
         scan.issues.append(
             f"The data holds {n} line start markers, fewer than one frame "
             f"({geometry})."
-            + (
-                f" Frame markers are {measured} lines apart."
-                if measured
-                else ""
-            )
         )
-    elif len(positions) == 0:
-        if scan.end_of_data and n % lpf == 0:
-            scan.verdict = "ok"  # whole frames by line count
-        else:
-            scan.verdict = "unverified"
         return
-    else:
-        missing = _missing_boundary(
-            positions, lpf, tolerance, n, scan.end_of_data
+    if len(positions) == 0:
+        return  # nothing to check the frames against
+
+    # Evenly spaced markers at a spacing other than lines_per_frame, e.g.
+    # 0, 256, 512 for 512. A glitch breaks the even spacing; a spacing within
+    # the tolerance of lines_per_frame (e.g. 399 for 400: a dropped line
+    # marker) is left to the frame sync.
+    if (
+        len(lengths) == len(spacings) > 0
+        and np.all(spacings == spacings[0])
+        and abs(spacings[0] - lpf) > tolerance
+    ):
+        scan.issues.append(
+            f"Frame markers are {spacings[0]} line starts apart, but "
+            f"{geometry}."
         )
-        # Markers at a different, regular spacing throughout the scanned
-        # lines, e.g. 0, 256, 512 for lines_per_frame = 512. A glitch is
-        # not evenly spaced with the other markers. A spacing within the
-        # tolerance (e.g. 399 for 400: a dropped line marker, or one line
-        # too many configured) is left to the frame sync, which realigns
-        # and reports it frame by frame.
-        regular = (
-            len(positions) >= 2
-            and measured is not None
-            and abs(measured - lpf) > tolerance
-            and np.all(np.diff(positions) == measured)
-            and positions[-1] + measured > n - 1
+        return
+
+    # The end of the data needs no marker (a frame-start marker would
+    # follow it); otherwise a marker up to `tolerance` lines late must be
+    # within the scanned lines.
+    last = n - 1 if end_of_data else n - 1 - tolerance
+    missing = _missing_boundary(positions, lpf, tolerance, last)
+    if missing is not None:
+        measured = scan.measured_lines_per_frame
+        scan.issues.append(
+            f"No frame marker within {tolerance} line(s) of line start "
+            f"{missing} ({geometry})."
+            + (f" Frame markers are {measured} line starts apart." if measured else "")
         )
-        if missing is None and not regular:
-            # Off-boundary markers among on-boundary ones are glitches,
-            # handled (and reported) by the reconstruction's frame sync
-            scan.verdict = "ok"
-            return
-        scan.verdict = "mismatch"
-        if measured == lpf:
-            offset = int(positions[0] % lpf)
-            scan.issues.append(
-                f"Frame markers are {lpf} lines apart as configured, but "
-                f"{offset} line(s) off the frame boundaries counted from the "
-                f"first line start: the data does not begin with a frame. "
-                f"Lines are assigned to frames by count ({geometry})."
-            )
-            return
-        if measured is not None:
-            scan.issues.append(
-                f"Frame markers are {measured} line starts apart, but "
-                f"{geometry}."
-            )
-        else:
-            scan.issues.append(
-                f"No frame marker after {missing} line starts "
-                f"({geometry}); frames hold more lines than configured."
-            )
-    if measured and measured != lpf:
-        scan.suggestions = _suggestions(measured, config)
-        if scan.suggestions:
-            scan.issues[-1] += " Matching (lines, accumulations): " + ", ".join(
-                f"({l}, {a})" for l, a in scan.suggestions[:6]
-            ) + "."
+
+
+def _missing_boundary(positions, lpf, tolerance, last):
+    """First frame boundary up to line start ``last`` without a frame marker.
+
+    Follows the frame sync (frame_sync="resync"): line 0 starts frame 0, and
+    a marker at most ``tolerance`` lines off a boundary marks it and realigns
+    the following boundaries; markers further off are glitches.
+    """
+    anchor, offset = 0, 0
+    for p in positions.tolist():
+        _, mismatch = frame_boundary_mismatch(p - offset, lpf)
+        if abs(mismatch) > tolerance:
+            continue
+        if p > anchor + lpf + tolerance:
+            return anchor + lpf
+        anchor, offset = p, offset + mismatch
+    return anchor + lpf if anchor + lpf <= last else None
 
 
 def _line_duration(scan, config, frames, starts, stops, estimate_lines):
@@ -326,31 +244,22 @@ def _line_duration(scan, config, frames, starts, stops, estimate_lines):
         frames = frames[frames <= starts[-1]]
         stops = stops[stops <= starts[-1]]
     estimate = estimate_line_duration(
-        frames, starts, stops, lines_per_frame=scan.lines_per_frame
+        frames, starts, stops, lines_per_frame=config.lines_per_frame
     )
     scan.median_line_period = estimate.median_period
 
     if config.line_duration is not None:
         scan.line_duration = int(config.line_duration)
         scan.line_duration_source = "config"
-        period = estimate.median_period
-        if period is not None and config.line_duration > period:
-            scan.issues.append(
-                f"line_duration={config.line_duration} exceeds the line "
-                f"period {period:.0f} (median start-to-start interval within "
-                f"the first frame, nsync units); consecutive line windows "
-                f"overlap."
-            )
-        return
-
-    if estimate.duration is None:
+        issue = line_duration_issue(scan.line_duration, estimate.median_period)
+        if issue:
+            scan.issues.append(issue)
+    elif estimate.duration is None:
         scan.issues.append(
-            f"The line duration could not be estimated from "
-            f"{len(starts)} line start marker(s) of the first frame "
-            f"(no line stop markers and no two consecutive lines in a "
-            f"frame); set ScanConfig.line_duration."
+            f"The line duration could not be estimated from {len(starts)} "
+            f"line start marker(s) (no line stop markers and no two "
+            f"consecutive lines in a frame); set ScanConfig.line_duration."
         )
-        return
-    scan.line_duration = estimate.duration
-    scan.line_duration_source = estimate.source
-    config.line_duration = estimate.duration
+    else:
+        scan.line_duration = config.line_duration = estimate.duration
+        scan.line_duration_source = estimate.source

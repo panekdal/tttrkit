@@ -76,14 +76,13 @@ def reconstruct(events, chunk=None, **cfg):
     chunks = [events[a:b] for a, b in zip(bounds[:-1], bounds[1:]) if b > a]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        scan = prescan_events(chunks, config)
+        prescan_events(chunks, config)
         rec = ImageReconstructor(
             config, outputs=["mean_arrival_time"], tcspc_channels=1024
         )
         for c in chunks:
             rec.update(c)
         rec.finalize()
-    rec.prescan = scan
     sync_warnings = [w for w in caught if issubclass(w.category, FrameSyncWarning)]
     return rec, sync_warnings
 
