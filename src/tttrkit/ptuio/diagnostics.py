@@ -4,40 +4,52 @@ from collections import Counter
 
 import numpy as np
 
+from .config import (
+    DEFAULT_FRAME_START_MARKER_CHANNEL,
+    DEFAULT_LINE_START_MARKER_CHANNEL,
+    DEFAULT_LINE_STOP_MARKER_CHANNEL,
+)
 from .decoder import T3OverflowCorrector, marker_events, resolve_markers
 from .reader import TTTRReader
 
 
-def get_marker_distribution(events: np.ndarray) -> dict[int, int]:
-    """Returns a count of each special marker code."""
-    mask = (events["channel"] < 63) & (events["special"] != 0)
-    markers = events["channel"][mask]
+def count_marker_values(events: np.ndarray) -> dict[int, int]:
+    """{marker value: count} of the marker events."""
+    markers = marker_events(events)["channel"]
     unique, counts = np.unique(markers, return_counts=True)
     return dict(zip(unique.tolist(), counts.tolist()))
 
 
-def get_marker_numbers(
+def analyze_markers(
         reader: TTTRReader,
-        wrap: int,
         max_accumulations: int = 64,
         verbose = True,
+        *,
+        frame_start_marker_channel: int = DEFAULT_FRAME_START_MARKER_CHANNEL,
+        line_start_marker_channel: int = DEFAULT_LINE_START_MARKER_CHANNEL,
+        line_stop_marker_channel: int = DEFAULT_LINE_STOP_MARKER_CHANNEL,
 ) -> dict:
     """Count the markers of the whole file, per raw marker value and per
-    role (default marker channels), and list the (lines, accumulations)
-    pairs matching the line starts per frame marker."""
+    role (with the given marker channels), and list the (lines,
+    accumulations) pairs matching the line starts per frame marker."""
     start_marker_count: int = 0
     stop_marker_count: int = 0
     frame_marker_count: int = 0
     marker_distribution = Counter()
 
-    corrector = T3OverflowCorrector(wraparound=wrap)
+    corrector = T3OverflowCorrector()
 
     reader.reset()
     for chunk in reader.iter_chunks():
         corrected_chunk = corrector.correct(chunk)
         raw_markers = marker_events(corrected_chunk)
-        marker_distribution.update(get_marker_distribution(raw_markers))
-        frame_markers, start_markers, stop_markers = resolve_markers(corrected_chunk)
+        marker_distribution.update(count_marker_values(raw_markers))
+        frame_markers, start_markers, stop_markers = resolve_markers(
+            corrected_chunk,
+            frame_start_marker_channel,
+            line_start_marker_channel,
+            line_stop_marker_channel,
+        )
         start_marker_count += len(start_markers)
         stop_marker_count += len(stop_markers)
         frame_marker_count += len(frame_markers)

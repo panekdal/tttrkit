@@ -21,7 +21,7 @@ def smooth_phasor(phasor, photon_count, size: int = 3):
     return phasor_smoothed
 
 
-def get_phasor_from_decay(
+def phasor_from_decay(
     decay: np.ndarray,
     tcspc_resolution: float,
     sync_rate: float,

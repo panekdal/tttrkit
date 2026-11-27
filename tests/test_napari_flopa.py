@@ -60,7 +60,11 @@ def test_napari_flopa_pipeline(ptu):
         cfg = ScanConfig(**config)
         h.prescan(reader, cfg, h.CHUNK_SIZE)
         rec = ImageReconstructor(
-            cfg, outputs=["photon_count"], tcspc_channels=tcspc
+            cfg,
+            outputs=["photon_count"],
+            tcspc_channels=tcspc,
+            sync_rate=reader.header.sync_rate,
+            tcspc_resolution=reader.header.tcspc_resolution,
         )
         for chunk in reader.iter_chunks(h.CHUNK_SIZE):
             rec.update(corr.correct(chunk))

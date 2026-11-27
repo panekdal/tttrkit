@@ -1,54 +1,84 @@
-"""Visualization helpers for FLIM analysis results."""
+"""Visualization helpers for FLIM analysis results.
+
+Requires matplotlib, an optional dependency: ``pip install tttrkit[plot]``.
+"""
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from matplotlib.axes import Axes
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+    from matplotlib.axes import Axes
+except ImportError as e:
+    raise ImportError(
+        "tttrkit.analysis.visualization requires matplotlib; install it "
+        "with `pip install tttrkit[plot]`."
+    ) from e
 
 
 
-def create_FLIM_image(
-    mean_photon_arrival_time,
+def create_flim_image(
+    lifetime,
     intensity,
     colormap=cm.rainbow,
-    lt_min=None,
-    lt_max=None,
-    int_min=None,
-    int_max=None,
+    lifetime_min=None,
+    lifetime_max=None,
+    intensity_min=None,
+    intensity_max=None,
 ):
-    """Create an RGB FLIM image from lifetime and intensity arrays."""
-    if mean_photon_arrival_time.shape != intensity.shape:
+    """RGB FLIM image: hue from ``lifetime``, brightness from ``intensity``.
+
+    Args:
+        lifetime: Per-pixel lifetime (or mean arrival time), any unit.
+        intensity: Per-pixel intensity, same shape.
+        colormap: Matplotlib colormap for the lifetime.
+        lifetime_min, lifetime_max: Lifetime mapped to the ends of the
+            colormap (default: the data range).
+        intensity_min, intensity_max: Intensity mapped to black and full
+            brightness (default: the data range).
+    """
+    if lifetime.shape != intensity.shape:
         raise ValueError("Lifetime and intensity arrays must have the same shape")
-    if lt_min is None or lt_max is None:
-        lt_min = np.nanmin(mean_photon_arrival_time)
-        lt_max = np.nanmax(mean_photon_arrival_time)
-    if lt_max == lt_min:
-        raise ValueError(f"lt_max and lt_min must differ - got {lt_min}")
-    if int_min is None or int_max is None:
-        int_min = np.nanmin(intensity)
-        int_max = np.nanmax(intensity)
-    if int_max == int_min:
-        raise ValueError("int_max and int_min must differ")
+    if lifetime_min is None or lifetime_max is None:
+        lifetime_min = np.nanmin(lifetime)
+        lifetime_max = np.nanmax(lifetime)
+    if lifetime_max == lifetime_min:
+        raise ValueError(
+            f"lifetime_max and lifetime_min must differ - got {lifetime_min}"
+        )
+    if intensity_min is None or intensity_max is None:
+        intensity_min = np.nanmin(intensity)
+        intensity_max = np.nanmax(intensity)
+    if intensity_max == intensity_min:
+        raise ValueError("intensity_max and intensity_min must differ")
     lifetime_normalized = np.clip(
-        (mean_photon_arrival_time - lt_min) / (lt_max - lt_min), 0, 1
+        (lifetime - lifetime_min) / (lifetime_max - lifetime_min), 0, 1
     )
     lifetime_rgb = colormap(lifetime_normalized)[..., :3]
     intensity_normalized = np.clip(
-        (intensity - int_min) / (int_max - int_min), 0, 1
+        (intensity - intensity_min) / (intensity_max - intensity_min), 0, 1
     )
     return lifetime_rgb * intensity_normalized[..., np.newaxis]
 
 
-def draw_unitary_circle(
+def draw_universal_circle(
     ax: Axes,
-    sync_rate,
-    tau_max: int = None,
+    sync_rate: float,
+    tau_max_ns: int | None = None,
     tick_length=0.02,
     color='white',
     label_color='white',
     xlim=None,
     ylim=None,
 ):
+    """Draw the universal circle of the phasor plot with lifetime ticks.
+
+    Args:
+        ax: Axes to draw in.
+        sync_rate: Hz; sets the phasor frequency.
+        tau_max_ns: Largest lifetime tick, in ns (default: half the sync
+            period). Ticks every ns up to 8 ns, every 2 ns above.
+    """
     if not isinstance(ax, Axes):
         raise TypeError(f"'ax' must be a matplotlib Axes object, got {type(ax).__name__}")
     
@@ -69,12 +99,11 @@ def draw_unitary_circle(
 
     omega = 2 * np.pi * sync_rate
 
-    if tau_max is None:
-        period_ns = 1 / sync_rate
-        tau_max = int(np.ceil(period_ns / 2))
-        
-    # taus_ns = np.arange(1, tau_max + 1)
-    ticks = np.arange(1, tau_max + 1)
+    if tau_max_ns is None:
+        period_ns = 1e9 / sync_rate
+        tau_max_ns = int(np.ceil(period_ns / 2))
+
+    ticks = np.arange(1, tau_max_ns + 1)
     taus_ns = ticks[(ticks <= 8) | ((ticks > 8) & (ticks % 2 == 0))]
 
     center = np.array([0.5, 0])
@@ -136,48 +165,46 @@ def draw_unitary_circle(
     # Clean formatting
     ax.set_aspect('equal', adjustable = 'datalim')
 
-import matplotlib.pyplot as plt
 
-import matplotlib.pyplot as plt
+def plot_decay(decays, labels, time_axis=None, title=None):
+    """Plot decays on a log scale.
 
-
-import matplotlib.pyplot as plt
-
-
-def plot_decay(dec_list, labels, tm=None, title=None):
-    assert len(dec_list) == len(
-        labels
-    ), f"Mismatch between number of decays ({len(dec_list)}) and labels ({len(labels)})"
+    Args:
+        decays: Sequence of 1-D decays (counts per TCSPC channel).
+        labels: One legend label per decay.
+        time_axis: Seconds; one array for all decays, a sequence of one
+            array per decay, or None to plot against the channel index.
+            Plotted in ns.
+        title: Optional axes title.
+    """
+    if len(decays) != len(labels):
+        raise ValueError(
+            f"Mismatch between number of decays ({len(decays)}) and labels "
+            f"({len(labels)})"
+        )
 
     fig, ax = plt.subplots(figsize=(6, 4))
 
-    # Check if a custom time axis is provided per decay curve
-    has_multiple_tm = isinstance(tm, (list, tuple)) and len(tm) > 0 and hasattr(tm[0], "__len__")
-
-    if has_multiple_tm:
-        assert len(tm) == len(
-            dec_list
-        ), f"Mismatch between number of time arrays ({len(tm)}) and decays ({len(dec_list)})"
-
-    for i, (dec, label) in enumerate(zip(dec_list, labels)):
-        # Determine appropriate x-axis data for this specific curve
-        if tm is None:
-            x_data = range(len(dec))
-        elif has_multiple_tm:
-            x_data = tm[i]
-        else:
-            x_data = tm
-
-        ax.semilogy(
-            x_data,
-            dec,
-            linestyle="",
-            marker=".",
-            markersize=2,
-            label=label,
+    # One time axis per decay, or one shared by all
+    per_decay = (
+        isinstance(time_axis, (list, tuple))
+        and len(time_axis) > 0
+        and hasattr(time_axis[0], "__len__")
+    )
+    if per_decay and len(time_axis) != len(decays):
+        raise ValueError(
+            f"Mismatch between number of time axes ({len(time_axis)}) and "
+            f"decays ({len(decays)})"
         )
 
-    ax.set_xlabel("time (ns)" if tm is not None else "index")
+    for i, (decay, label) in enumerate(zip(decays, labels)):
+        if time_axis is None:
+            x = np.arange(len(decay))
+        else:
+            x = np.asarray(time_axis[i] if per_decay else time_axis) * 1e9
+        ax.semilogy(x, decay, linestyle="", marker=".", markersize=2, label=label)
+
+    ax.set_xlabel("time (ns)" if time_axis is not None else "channel")
     ax.set_ylabel("counts")
     if title:
         ax.set_title(title)
@@ -186,18 +213,31 @@ def plot_decay(dec_list, labels, tm=None, title=None):
     plt.tight_layout()
     plt.show()
 
-def plot_decay_fit(tm,dec,fit,res,limits,title=None):
-    tm_fit = tm[limits[0]:limits[-1]]
-    fig,ax = plt.subplots(2,1,figsize = (6,5),height_ratios=[4,1])
-    ax[0].semilogy(tm,dec, color = 'blue',linestyle='',marker ='.',markersize=2)
-    ax[0].semilogy(tm_fit, fit, color = 'red')
-    ax[0].set_ylabel('counts')
-    ax[0].set_xticklabels('')
 
-    ax[1].plot(tm_fit,res, color = 'blue',linestyle='-',linewidth=.75,marker ='')
+def plot_decay_fit(time_axis, decay, fit, residuals, fit_limits_channels, title=None):
+    """Plot a decay with its fit, and the residuals below.
+
+    Args:
+        time_axis: Seconds, one value per channel of ``decay``; plotted in ns.
+        decay: Measured counts per channel.
+        fit: Fitted counts over the fit range.
+        residuals: Residuals over the fit range.
+        fit_limits_channels: (first, last) channel of the fit range, as
+            returned by the decay fitters under "limits".
+        title: Optional title.
+    """
+    time_ns = np.asarray(time_axis) * 1e9
+    fit_time_ns = time_ns[fit_limits_channels[0]:fit_limits_channels[-1]]
+    fig, ax = plt.subplots(2, 1, figsize=(6, 5), height_ratios=[4, 1])
+    ax[0].semilogy(time_ns, decay, color="blue", linestyle="", marker=".", markersize=2)
+    ax[0].semilogy(fit_time_ns, fit, color="red")
+    ax[0].set_ylabel("counts")
+    ax[0].set_xticklabels("")
+    if title:
+        ax[0].set_title(title)
+
+    ax[1].plot(fit_time_ns, residuals, color="blue", linestyle="-", linewidth=0.75, marker="")
     ax[1].set_xlim(ax[0].get_xlim())
-    ax[1].set_xlabel('time (ns)')
+    ax[1].set_xlabel("time (ns)")
 
- 
     plt.show()
-

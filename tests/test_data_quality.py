@@ -15,7 +15,7 @@ from tttrkit.ptuio.reconstructor import (
     ScanConfig,
 )
 
-from test_frame_sync import FRAMES, LINES, PERIOD, PIXELS, make_stream
+from test_frame_sync import ACQUISITION, FRAMES, LINES, PERIOD, PIXELS, make_stream
 
 IN_LINES = FRAMES * LINES  # one photon per line in make_stream
 
@@ -33,7 +33,7 @@ def _photon_in_line(f, l, dtime=10, channel=0):
 
 
 def run(events, chunk=None, tcspc_channels=1024, **cfg):
-    kw = dict(lines=LINES, pixels=PIXELS, frames=FRAMES, max_detector=2)
+    kw = dict(lines=LINES, pixels=PIXELS, frames=FRAMES, max_detector_channels=2)
     kw.update(cfg)
     config = ScanConfig(**kw)
     step = chunk or len(events)
@@ -42,7 +42,8 @@ def run(events, chunk=None, tcspc_channels=1024, **cfg):
         warnings.simplefilter("always")
         prescan_events(chunks, config)
         rec = ImageReconstructor(
-            config, outputs=["photon_count"], tcspc_channels=tcspc_channels
+            config, outputs=["photon_count"], tcspc_channels=tcspc_channels,
+            **ACQUISITION,
         )
         for c in chunks:
             rec.update(c)
@@ -133,10 +134,18 @@ def test_unestimated_line_duration_is_a_data_quality_warning():
         prescan_events([np.delete(events, drop)], config)
     assert config.line_duration is None
     with pytest.raises(ValueError, match="line_duration is not set"):
-        ImageReconstructor(config)
+        ImageReconstructor(config, **ACQUISITION)
 
 
-def test_data_beyond_configured_frames_is_recorded():
+def test_data_beyond_configured_frames_is_warned():
     ds, quality = run(make_stream(frames=5))
     assert ds.attrs["data_beyond_frames"] == 1
+    assert len(quality) == 1
+    assert "continue after the 3 configured frame(s)" in str(quality[0].message)
+
+
+def test_photons_after_the_last_line_are_no_data_beyond_frames():
+    # make_stream ends with a photon after the last line
+    ds, quality = run(make_stream())
+    assert ds.attrs["data_beyond_frames"] == 0
     assert quality == []

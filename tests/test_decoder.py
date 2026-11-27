@@ -42,3 +42,15 @@ def test_resolve_markers_rejects_non_marker_events():
     assert len(frame) == 0
     assert len(starts) == 0
     assert stops["channel"].tolist() == [2]
+
+def test_photons_on_detector_63_are_kept_and_overflows_are_not():
+    from tttrkit.ptuio.decoder import OVERFLOW_CHANNEL, photon_events
+
+    events = np.zeros(4, dtype=event_dtype)
+    events["nsync"] = np.arange(4)
+    events["channel"] = [0, 62, OVERFLOW_CHANNEL, OVERFLOW_CHANNEL]
+    events["special"] = [0, 0, 0, 1]  # the last one is an overflow record
+
+    photons = photon_events(events)
+
+    assert photons["channel"].tolist() == [0, 62, 63]

@@ -22,6 +22,8 @@ PERIOD = 1000  # line period in sync units
 LINES = 8
 PIXELS = 4
 FRAMES = 3
+# Acquisition values ImageReconstructor requires (from the header for files)
+ACQUISITION = dict(sync_rate=40e6, tcspc_resolution=5e-12)
 
 
 def make_stream(
@@ -69,7 +71,7 @@ def make_stream(
 
 
 def reconstruct(events, chunk=None, **cfg):
-    kw = dict(lines=LINES, pixels=PIXELS, frames=FRAMES, max_detector=2)
+    kw = dict(lines=LINES, pixels=PIXELS, frames=FRAMES, max_detector_channels=2)
     kw.update(cfg)
     config = ScanConfig(**kw)
     bounds = list(range(0, len(events), chunk or len(events))) + [len(events)]
@@ -78,7 +80,8 @@ def reconstruct(events, chunk=None, **cfg):
         warnings.simplefilter("always")
         prescan_events(chunks, config)
         rec = ImageReconstructor(
-            config, outputs=["mean_arrival_time"], tcspc_channels=1024
+            config, outputs=["mean_arrival_time"], tcspc_channels=1024,
+            **ACQUISITION,
         )
         for c in chunks:
             rec.update(c)
@@ -184,10 +187,11 @@ def test_lines_beyond_configured_frames_are_dropped():
 
 
 def test_default_mode_is_resync():
-    assert ScanConfig().frame_sync == "resync"
-    assert ScanConfig.from_dict({}).frame_sync == "resync"
+    geometry = dict(lines=LINES, pixels=PIXELS)
+    assert ScanConfig(**geometry).frame_sync == "resync"
+    assert ScanConfig.from_dict(geometry).frame_sync == "resync"
     with pytest.raises(ValueError):
-        ScanConfig(frame_sync="sometimes")
+        ScanConfig(**geometry, frame_sync="sometimes")
 
 
 def _add_line_marker(events, nsync):

@@ -1,13 +1,21 @@
 import numpy as np
 from .file import Header
 
+
 class TTTRReader:
+    """Raw T3 records of a .ptu file, read in chunks.
+
+    Raises on opening a file whose records decode_t3 cannot read (see
+    Header.check_t3).
+    """
+
     def __init__(self, path):
         self.path = path
         self._header = Header(path)  # parse ONCE
+        self._header.check_t3()
         self.offset = self._header.data_offset
         self.bits = self._header.bits_per_record
-        self.dtype = np.uint32 if self.bits == 32 else np.uint64
+        self.dtype = np.uint32
         self._pos = self.offset  # current read position, advances on read/iter_chunks
 
     @property
@@ -43,5 +51,3 @@ class TTTRReader:
                 if advance:
                     self._pos = f.tell()
                 yield chunk
-
-

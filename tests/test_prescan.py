@@ -19,7 +19,7 @@ DURATION = PERIOD * 8 // 10  # line stop at 0.8 period in make_stream
 
 def scan(events, chunk=None, **cfg):
     """Pre-scan events cut into chunks; (FirstFrameScan, config, warnings)."""
-    kw = dict(lines=LINES, pixels=4, frames=FRAMES, max_detector=2)
+    kw = dict(lines=LINES, pixels=4, frames=FRAMES, max_detector_channels=2)
     kw.update(cfg)
     config = ScanConfig(**kw)
     step = chunk or len(events)
@@ -79,7 +79,9 @@ def test_frame_pauses_do_not_bias_the_estimate_without_stops(frame_marker):
         pause=50 * PERIOD,
     )
     result, config, issued = scan(without_stops(events), lines=lines, frames=80)
-    assert issued == []
+    # The only issue: the line duration is a guess without stop markers
+    assert len(issued) == 1 and "guessed" in str(issued[0].message)
+    assert result.issues == [str(issued[0].message)]
     assert result.median_line_period == PERIOD
     assert result.line_duration_source == "line_period"
     assert result.line_duration == DURATION
@@ -211,7 +213,7 @@ def test_reads_only_the_first_frame():
             consumed.append(a)
             yield events[a : a + 10]
 
-    config = ScanConfig(lines=LINES, frames=40)
+    config = ScanConfig(lines=LINES, pixels=4, frames=40)
     result = prescan_events(chunks(), config)
     assert result.issues == []
     assert len(consumed) * 10 < len(events) / 2
@@ -231,5 +233,7 @@ def test_segment_reconstructor_estimate_excludes_frame_pauses():
         make_stream(frames=20, lines=lines), lines, pause=50 * PERIOD
     )
     config = ScanConfig(lines=lines, pixels=4)
-    SegmentReconstructor(config).reconstruct(without_stops(events))
-    assert config.line_duration == DURATION
+    with pytest.warns(ScanConfigWarning, match="guessed"):
+        ds = SegmentReconstructor(config).reconstruct(without_stops(events))
+    assert ds["line_duration"].item() == DURATION
+    assert config.line_duration is None  # the caller's config is unchanged

@@ -6,15 +6,27 @@ import xarray as xr
 from numpy.typing import NDArray
 
 from .config import (  # noqa: F401 (re-exported for existing imports)
+    DEFAULT_FRAME_START_MARKER_CHANNEL,
+    DEFAULT_LINE_START_MARKER_CHANNEL,
+    DEFAULT_LINE_STOP_MARKER_CHANNEL,
     DataQualityWarning,
     FrameSyncWarning,
     ScanConfig,
     ScanConfigWarning,
 )
-from .decoder import event_dtype, get_photons, resolve_markers
+from .decoder import (
+    DETECTOR_CHANNELS,
+    DTIME_CHANNELS,
+    MARKER_VALUE_LIMIT,
+    check_marker_bit,
+    event_dtype,
+    photon_events,
+    resolve_markers,
+)
 from .marker_timing import (
     estimate_line_duration,
     frame_boundary_mismatch,
+    guessed_line_duration_issue,
     line_duration_issue,
     within_frame_intervals,
 )
@@ -33,6 +45,10 @@ AVAILABLE_OUTPUTS = [
     "phasor",
     "tcspc_histogram",
 ]
+
+# Marker roles in the order resolve_markers returns them; TraceReconstructor
+# names its outputs after them
+MARKER_ROLES = ("frame_start_marker", "line_start_marker", "line_stop_marker")
 
 # Discarded fractions above which a DataQualityWarning is issued. Below
 # them, discarded photons and markers are typically corrupted records
@@ -66,13 +82,13 @@ def _build_line_windows(
     return start, stop, reversed_mask
 
 
-def _harmonic_correction(t: np.ndarray, laser_duty: float) -> np.ndarray:
+def _harmonic_correction(t: np.ndarray, scan_duty: float) -> np.ndarray:
     y = (
-        np.cos(0.5 * np.pi * (1 - laser_duty))
-        - np.cos(np.pi * laser_duty * t + 0.5 * np.pi * (1 - laser_duty))
-    ) / (np.pi * laser_duty)
+        np.cos(0.5 * np.pi * (1 - scan_duty))
+        - np.cos(np.pi * scan_duty * t + 0.5 * np.pi * (1 - scan_duty))
+    ) / (np.pi * scan_duty)
 
-    I = 2 * np.sin(0.5 * np.pi * laser_duty) / (np.pi * laser_duty)
+    I = 2 * np.sin(0.5 * np.pi * scan_duty) / (np.pi * scan_duty)
     return y / I
 
 
@@ -82,8 +98,8 @@ def _phase_to_pixels(
     segment_stops: np.ndarray,
     pixels: int,
     reversed_flags: np.ndarray,
-    harmonic_scan: bool = False,
-    laser_duty: float = 0.6,
+    harmonic_scan: bool,
+    scan_duty: float | None,
 ) -> np.ndarray:
     """Convert photon nsync values within their line segment to a pixel index,
     flipping backward (reversed) lines.
@@ -94,7 +110,7 @@ def _phase_to_pixels(
         segment_stops - segment_starts
     )
     if harmonic_scan:
-        phase = _harmonic_correction(phase, laser_duty)
+        phase = _harmonic_correction(phase, scan_duty)
     pixel_idx = np.floor(phase * pixels).astype(int)
     return np.where(reversed_flags, pixels - 1 - pixel_idx, pixel_idx)
 
@@ -104,12 +120,13 @@ class ImageReconstructor:
     def __init__(
         self,
         config: ScanConfig,
+        *,
+        sync_rate: float,
+        tcspc_resolution: float,
         roi_mask: np.ndarray | None = None,
         outputs: Sequence[str] | None = None,
-        laser_sync_rate: float = 40e6,
-        tcspc_channels: int = 2**15,
+        tcspc_channels: int = DTIME_CHANNELS,
         tcspc_bin_factor: int = 1,
-        tcspc_resolution: float = 5e-12,
     ):
         """
         Initialize an image reconstructor.
@@ -117,6 +134,16 @@ class ImageReconstructor:
         Parameters:
             config (ScanConfig): Scan configuration object. It is copied:
                 changing it afterwards does not affect this reconstructor.
+
+            sync_rate (float): Sync rate in Hz (``reader.header.sync_rate``),
+                usually the laser repetition rate. With tcspc_resolution it
+                gives the angular frequency of the phasor.
+
+            tcspc_resolution (float): Raw TCSPC resolution in seconds per
+                dtime channel (``reader.header.tcspc_resolution``). The unit
+                of dtime and of mean_arrival_time; reported as-is in the
+                output. The histogram bins are tcspc_bin_factor times wider
+                (output tcspc_histogram_resolution).
 
             roi_mask (ndarray, optional): Binary mask of shape (lines, pixels)
                 to restrict processing to specific regions.
@@ -129,12 +156,12 @@ class ImageReconstructor:
                 - "tcspc_histogram"
                 If None, all outputs are computed.
 
-            laser_sync_rate (float): Laser sync (repetition) rate in Hz,
-                used together with tcspc_resolution to compute the angular
-                frequency for phasor computation. Default: 40e6 (40 MHz).
-
-            tcspc_channels (int): Number of time bins for TCSPC histogram.
-                Cannot exceed 2**15, since dtime has 15-bit resolution.
+            tcspc_channels (int): Number of raw dtime channels kept; photons
+                with dtime >= tcspc_channels are discarded (with a
+                DataQualityWarning if many). Cannot exceed 2**15, since dtime
+                has 15-bit resolution (the default, which keeps every
+                photon). The histogram has tcspc_channels / tcspc_bin_factor
+                bins.
 
             tcspc_bin_factor (int): Number of raw TCSPC channels to combine
                 into a single histogram bin (e.g. 4 combines every 4 channels
@@ -143,11 +170,6 @@ class ImageReconstructor:
                 mean_arrival_time and phasor keep full raw dtime resolution.
                 If it does not evenly divide tcspc_channels, tcspc_channels
                 is rounded up to the nearest multiple. Default: 1 (no binning).
-
-            tcspc_resolution (float): Raw TCSPC resolution in seconds per
-                dtime channel (i.e. the file's MeasDesc_Resolution). Reported
-                as-is in the output; used with tcspc_bin_factor to derive the
-                binned tcspc_histogram_resolution. Default: 5e-12 (5 ps).
         """
 
         if not isinstance(config, ScanConfig):
@@ -164,12 +186,16 @@ class ImageReconstructor:
                 f"ScanConfig.line_duration must be positive, got "
                 f"{config.line_duration}"
             )
+        config.check_harmonic_scan()
+        if sync_rate <= 0 or tcspc_resolution <= 0:
+            raise ValueError(
+                "sync_rate and tcspc_resolution must be positive"
+            )
         if not isinstance(tcspc_bin_factor, (int, np.integer)) or tcspc_bin_factor < 1:
             raise ValueError("tcspc_bin_factor must be a positive integer")
-        max_tcspc_channels = 2**15  # dtime has 15-bit resolution
-        if tcspc_channels > max_tcspc_channels:
+        if tcspc_channels > DTIME_CHANNELS:
             raise ValueError(
-                f"tcspc_channels cannot exceed {max_tcspc_channels} "
+                f"tcspc_channels cannot exceed {DTIME_CHANNELS} "
                 "(dtime has 15-bit resolution)"
             )
         # Round up to the nearest multiple of tcspc_bin_factor
@@ -184,11 +210,11 @@ class ImageReconstructor:
             config.frames,
             config.lines_per_frame,
             config.pixels,
-            config.max_detector,
+            config.max_detector_channels,
         )
         # Maps a raw (pre-split) line index to its sequence index
         self._sequence_pattern = np.repeat(
-            np.arange(len(config.line_accumulations)), config.line_accumulations
+            np.arange(config.num_sequences), config.line_accumulations
         )
         self.active_detectors = set()
 
@@ -207,10 +233,13 @@ class ImageReconstructor:
 
         self.tcspc_channels = tcspc_channels
         self.tcspc_bin_factor = tcspc_bin_factor
-        self.tcspc_hist_channels = tcspc_channels // tcspc_bin_factor
-        self.tcspc_resolution = tcspc_resolution * tcspc_bin_factor
-        self.omega = 2 * np.pi * laser_sync_rate * self.tcspc_resolution
-        self.laser_sync_rate = laser_sync_rate
+        self.tcspc_histogram_channels = tcspc_channels // tcspc_bin_factor
+        # Raw dtime channel width, and the width of a histogram bin
+        self.tcspc_resolution = tcspc_resolution
+        self.tcspc_histogram_resolution = tcspc_resolution * tcspc_bin_factor
+        # Phase per raw dtime channel: phasors are computed from raw dtimes
+        self.omega = 2 * np.pi * sync_rate * self.tcspc_resolution
+        self.sync_rate = sync_rate
 
         # Initialize output arrays
         if "arrival_sum" in self._required:
@@ -223,9 +252,9 @@ class ImageReconstructor:
             self.tcspc_hist = np.zeros(
                 (
                     self.config.frames,
-                    len(self.config.line_accumulations),
-                    self.config.max_detector,
-                    self.tcspc_hist_channels,
+                    self.config.num_sequences,
+                    self.config.max_detector_channels,
+                    self.tcspc_histogram_channels,
                 ),
                 dtype=np.uint64,
             )  # existing shape logic
@@ -266,7 +295,7 @@ class ImageReconstructor:
         # the thresholds, as DataQualityWarning
         self._photons_in_lines = 0  # photons inside a line window
         self._tcspc_overflow = 0  # ... discarded: dtime >= tcspc_channels
-        self._detector_overflow = np.zeros(64, dtype=np.int64)  # by channel
+        self._detector_overflow = np.zeros(DETECTOR_CHANNELS, dtype=np.int64)  # by channel
         self._markers_total = 0
         self._markers_unconfigured = {}  # marker value -> count
         self._data_beyond_frames = False
@@ -296,7 +325,7 @@ class ImageReconstructor:
             events = np.concatenate([self._pending_photons, events])
             self._pending_photons = np.empty((0,), dtype=events.dtype)
 
-        photons = get_photons(events)
+        photons = photon_events(events)
         frame_markers, start_markers, _ = self._resolve_markers(events)
 
         if self.config.frame_sync != "count":
@@ -317,7 +346,7 @@ class ImageReconstructor:
     def _count_markers(self, events: np.ndarray) -> None:
         """Count markers, and those resolve_markers discards as glitches."""
         channels = events["channel"][
-            (events["special"] != 0) & (events["channel"] < 16)
+            (events["special"] != 0) & (events["channel"] < MARKER_VALUE_LIMIT)
         ]
         self._markers_total += len(channels)
         configured = (
@@ -373,6 +402,7 @@ class ImageReconstructor:
         channels = max(active_detectors, default=0) + 1
 
         data["tcspc_resolution"] = ((), self.tcspc_resolution)
+        data["tcspc_histogram_resolution"] = ((), self.tcspc_histogram_resolution)
         data["omega"] = ((), self.omega)
 
         if "tcspc_histogram" in self.requested_outputs:
@@ -386,7 +416,7 @@ class ImageReconstructor:
             photon_count = np.zeros(
                 shape=(
                     self.config.frames,
-                    len(self.config.line_accumulations),
+                    self.config.num_sequences,
                     self.config.lines,
                     self.config.pixels,
                     channels,
@@ -395,7 +425,7 @@ class ImageReconstructor:
             )
 
             pattern = np.repeat(
-                np.arange(len(self.config.line_accumulations)),
+                np.arange(self.config.num_sequences),
                 self.config.line_accumulations,
             )
 
@@ -416,7 +446,7 @@ class ImageReconstructor:
 
         if "photon_count" in self._required:
 
-            for accu_idx in range(len(self.config.line_accumulations)):
+            for accu_idx in range(self.config.num_sequences):
                 seq_line_idx = np.where(sequence_pattern == accu_idx)[0]
                 accum = self.config.line_accumulations[accu_idx]
                 for f in range(self.config.frames):
@@ -492,11 +522,12 @@ class ImageReconstructor:
 
         all_coords = {
             "frame": np.arange(self.config.frames),
-            "sequence": np.arange(len(self.config.line_accumulations)),
+            "sequence": np.arange(self.config.num_sequences),
             "line": np.arange(self.config.lines),
             "pixel": np.arange(self.config.pixels),
             "channel": np.arange(channels),
-            "tcspc_time": np.arange(self.tcspc_hist_channels) * self.tcspc_resolution,
+            "tcspc_time": np.arange(self.tcspc_histogram_channels)
+            * self.tcspc_histogram_resolution,
         }
 
         # Determine used dimensions
@@ -518,13 +549,14 @@ class ImageReconstructor:
         Attrs (plain integers, so the Dataset stays serialisable):
             photons_in_lines            photons inside a line window
             photons_discarded_tcspc     ... of which dtime >= tcspc_channels
-            photons_discarded_detector  ... of which channel >= max_detector
+            photons_discarded_detector  ... of which channel >= max_detector_channels
             markers_total               marker events read
             markers_discarded           ... combining configured and
                                         unconfigured inputs (glitches)
             frame_markers_off_boundary  frame markers not on a frame boundary
-            data_beyond_frames          1 if line starts followed the last
-                                        configured frame (reading stopped)
+            data_beyond_frames          1 if complete lines followed the
+                                        last configured frame (reading
+                                        stopped; also warned)
         """
         in_lines = self._photons_in_lines
         tcspc = self._tcspc_overflow
@@ -547,8 +579,8 @@ class ImageReconstructor:
         if in_lines and busy:
             warnings.warn(
                 f"Detector channel(s) {busy} (photons) are >= "
-                f"max_detector={self.config.max_detector} and were "
-                f"discarded; max_detector is likely too small.",
+                f"max_detector_channels={self.config.max_detector_channels} and were "
+                f"discarded; max_detector_channels is likely too small.",
                 DataQualityWarning,
                 stacklevel=3,
             )
@@ -559,6 +591,17 @@ class ImageReconstructor:
                 f"{dict(sorted(self._markers_unconfigured.items()))} "
                 f"(value: count) and were discarded; check the marker "
                 f"channels in ScanConfig.",
+                DataQualityWarning,
+                stacklevel=3,
+            )
+        if self._data_beyond_frames:
+            # Complete lines (line start markers), not photons trailing the
+            # last line
+            warnings.warn(
+                f"Line start markers continue after the "
+                f"{self.config.frames} configured frame(s); reading stopped "
+                f"there. Increase ScanConfig.frames if the data holds more "
+                f"frames.",
                 DataQualityWarning,
                 stacklevel=3,
             )
@@ -588,13 +631,6 @@ class ImageReconstructor:
             required.add("tcspc_hist")
 
         self._required = required
-
-    @property
-    def required_outputs(self):
-        return list(self.requested_outputs)
-
-    def get_available_outputs(self):
-        return list(self.requested_outputs)
 
     def _stretch_roi_mask(self, base_mask: np.ndarray) -> np.ndarray:
         if base_mask.shape != (self.config.lines, self.config.pixels):
@@ -836,14 +872,14 @@ class ImageReconstructor:
         # that losses are reported once at finalize
         tcspc_overflow = in_line & (photons["dtime"] >= self.tcspc_channels)
         detector_overflow = in_line & (
-            photons["channel"] >= self.config.max_detector
+            photons["channel"] >= self.config.max_detector_channels
         )
         self._photons_in_lines += int(np.count_nonzero(in_line))
         self._tcspc_overflow += int(np.count_nonzero(tcspc_overflow))
         if detector_overflow.any():
             self._detector_overflow += np.bincount(
-                photons["channel"][detector_overflow], minlength=64
-            )[:64]
+                photons["channel"][detector_overflow], minlength=DETECTOR_CHANNELS
+            )[:DETECTOR_CHANNELS]
 
         valid = in_line & ~tcspc_overflow & ~detector_overflow
 
@@ -864,7 +900,7 @@ class ImageReconstructor:
             self.config.pixels,
             reversed_flags,
             harmonic_scan=self.config.harmonic_scan,
-            laser_duty=self.config.laser_duty,
+            scan_duty=self.config.scan_duty,
         )
 
         valid_pixels = (pixels >= 0) & (pixels < self.config.pixels)
@@ -936,9 +972,6 @@ class ImageReconstructor:
             (0,), dtype=self._pending_photons.dtype
         )
 
-# TODO: add option to select marker channels and validation of marker chan
-
-
 class SegmentReconstructor:
     """Reconstruct a single chunk of events into a (line, pixel) image, using
     only the complete lines bounded by line-start markers found within that
@@ -959,13 +992,19 @@ class SegmentReconstructor:
     the lines before and after it belong to different frames (a discontinuity).
     Such breaks are reported via the ``frame_break_line`` output variable: line
     index after which a frame-start marker was detected.
+
+    Pixels are always mapped linearly in time, ignoring ``harmonic_scan``:
+    the forward/backward alignment it serves needs no harmonic correction,
+    and a wrong ``scan_duty`` (which cannot be measured) would bias it.
+
+    The config is copied. A line duration it lacks is estimated from each
+    chunk and returned in the ``line_duration`` variable.
     """
 
-    def __init__(self, config: ScanConfig, laser_sync_rate: float = 40e6):
+    def __init__(self, config: ScanConfig):
         if not isinstance(config, ScanConfig):
             raise TypeError("SegmentReconstructor requires a ScanConfig object")
-        self.config = config
-        self.laser_sync_rate = laser_sync_rate  # unused; kept for callers
+        self.config = copy.deepcopy(config)
 
     def reconstruct(self, events: np.ndarray) -> xr.Dataset:
         """Process one chunk of events and return the reconstructed image.
@@ -975,16 +1014,18 @@ class SegmentReconstructor:
 
         Returns:
             xr.Dataset with a ``photon_count`` variable of dims
-            ``("line", "pixel")`` and a ``frame_break_line`` variable listing
+            ``("line", "pixel")``, a ``frame_break_line`` variable listing
             the line index after which each frame-start marker found in the
-            chunk occurred (empty if the chunk doesn't span a frame boundary).
+            chunk occurred (empty if the chunk doesn't span a frame boundary)
+            and the scalar ``line_duration`` used (nsync units, -1 if there
+            was none).
         """
         if events.dtype != event_dtype:
             raise TypeError(
                 f"Expected events with dtype {event_dtype}, got {events.dtype}"
             )
 
-        photons = get_photons(events)
+        photons = photon_events(events)
         frame_markers, start_markers, stop_markers = resolve_markers(
             events,
             self.config.frame_start_marker_channel,
@@ -996,7 +1037,8 @@ class SegmentReconstructor:
             # Not enough line-start markers to bound a single complete line
             return self._empty_dataset()
 
-        if self.config.line_duration is None:
+        line_duration = self.config.line_duration
+        if line_duration is None:
             # A single chunk, so the estimate uses this chunk only. Its line
             # offset within a frame is unknown: only frame markers exclude
             # the intervals between frames. Callers with a reader can run
@@ -1008,17 +1050,20 @@ class SegmentReconstructor:
             )
             if estimate.duration is None:
                 return self._empty_dataset()
-            self.config.line_duration = estimate.duration
+            issue = guessed_line_duration_issue(estimate)
+            if issue:
+                warnings.warn(issue, ScanConfigWarning, stacklevel=2)
+            line_duration = estimate.duration
         else:
             self._check_line_duration(
                 start_markers["nsync"], frame_markers["nsync"]
             )
 
-        if self.config.line_duration <= 0:
+        if line_duration <= 0:
             return self._empty_dataset()
 
         start, stop, line_idx, reversed_mask = self._build_segments(
-            start_markers["nsync"]
+            start_markers["nsync"], line_duration
         )
         photon_count = np.zeros(
             (len(start), self.config.pixels), dtype=np.uint32
@@ -1032,6 +1077,7 @@ class SegmentReconstructor:
             {
                 "photon_count": (("line", "pixel"), photon_count),
                 "frame_break_line": (("frame_break",), frame_break_lines),
+                "line_duration": ((), int(line_duration)),
             },
             coords={
                 "line": np.arange(len(start)),
@@ -1070,6 +1116,7 @@ class SegmentReconstructor:
                     np.zeros((0, self.config.pixels), dtype=np.uint32),
                 ),
                 "frame_break_line": (("frame_break",), np.empty(0, dtype=np.int64)),
+                "line_duration": ((), int(self.config.line_duration or -1)),
             },
             coords={
                 "line": np.arange(0),
@@ -1080,12 +1127,12 @@ class SegmentReconstructor:
 
 
     def _build_segments(
-        self, start_nsyncs: NDArray[np.uint64]
+        self, start_nsyncs: NDArray[np.uint64], line_duration: int
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         line_idx = np.arange(len(start_nsyncs) - 1, dtype=np.int64)
         start, stop, reversed_mask = _build_line_windows(
             start_nsyncs[:-1],
-            line_duration=self.config.line_duration,
+            line_duration=line_duration,
             line_idx=line_idx,
             bidirectional=self.config.bidirectional,
             line_start_marker_delay=self.config.line_start_marker_delay,
@@ -1128,6 +1175,9 @@ class SegmentReconstructor:
             stop[segment_index],
             self.config.pixels,
             reversed_flags,
+            # Linear on purpose, see the class docstring
+            harmonic_scan=False,
+            scan_duty=None,
         )
 
         valid_pixels = (pixels >= 0) & (pixels < self.config.pixels)
@@ -1146,56 +1196,70 @@ class TraceReconstructor:
     """
     def __init__(
         self,
-        start_time: float = 0.0,
-        stop_time: float = 10.0,
-        max_detector: int = 64,
-        bin_width: float = 1e-3,
-        sync_rate: float = 40e6,
+        *,
+        sync_rate: float,
+        stop_time_s: float,
+        start_time_s: float = 0.0,
+        bin_width_s: float = 1e-3,
+        max_detector_channels: int = DETECTOR_CHANNELS,
         outputs: Sequence[str] | None = None,
+        frame_start_marker_channel: int = DEFAULT_FRAME_START_MARKER_CHANNEL,
+        line_start_marker_channel: int = DEFAULT_LINE_START_MARKER_CHANNEL,
+        line_stop_marker_channel: int = DEFAULT_LINE_STOP_MARKER_CHANNEL,
     ):
         """
         Initialize a trace reconstructor.
 
         Parameters:
-            start_time_s (float): Start time in seconds. Default: 0.0
-            stop_time_s (float): Stop time in seconds. Default: 10.0
-            max_detector (int): Maximum detector index. Default: 64
+            sync_rate (float): Sync rate in Hz (``reader.header.sync_rate``).
+            stop_time_s (float): End of the trace window in seconds.
+            start_time_s (float): Start of the trace window in seconds.
+                Default: 0.0
             bin_width_s (float): Time bin width in seconds. Default: 1e-3 (1 ms)
-            sync_rate (float): Sync rate in Hz. Default: 40e6 (40 MHz)
+            max_detector_channels (int): Detector channels kept. Default: all the
+                record format can hold.
             outputs (list of str, optional): List of outputs to compute.
                 - "photon_count": intensity trace per detector
                 - "markers": marker times (frame start, line start, line stop)
                 If None, both outputs are computed.
+            frame_start_marker_channel, line_start_marker_channel,
+            line_stop_marker_channel (int): Marker input bits, as in
+                ScanConfig.
         """
 
         if sync_rate <= 0:
             raise ValueError("sync_rate must be positive")
-        if bin_width <= 0:
+        if bin_width_s <= 0:
             raise ValueError("bin_width_s must be positive")
-        if start_time >= stop_time:
+        if start_time_s >= stop_time_s:
             raise ValueError("start_time_s must be less than stop_time_s")
 
-        self.start_time = start_time
-        self.stop_time = stop_time
-        self.max_detector = max_detector
-        self.bin_width = bin_width
+        self.start_time_s = start_time_s
+        self.stop_time_s = stop_time_s
+        self.max_detector_channels = max_detector_channels
+        self.bin_width_s = bin_width_s
         self.sync_rate = sync_rate
+        self.marker_channels = (
+            check_marker_bit("frame_start_marker_channel", frame_start_marker_channel),
+            check_marker_bit("line_start_marker_channel", line_start_marker_channel),
+            check_marker_bit("line_stop_marker_channel", line_stop_marker_channel),
+        )
 
         # Calculate number of bins
-        self.n_bins = int(np.ceil((stop_time - start_time) / bin_width))
+        self.n_bins = int(np.ceil((stop_time_s - start_time_s) / bin_width_s))
 
         # Convert time boundaries to nsync
-        self.start_nsync = int(start_time * sync_rate)
-        self.stop_nsync = int(stop_time * sync_rate)
-        self.bin_width_nsync = int(bin_width * sync_rate)
+        self.start_nsync = int(start_time_s * sync_rate)
+        self.stop_nsync = int(stop_time_s * sync_rate)
+        self.bin_width_nsync = int(bin_width_s * sync_rate)
 
         # Create time edges and bin centers
         self.time_edges_nsync = (
             np.arange(self.n_bins + 1, dtype=np.float64) * self.bin_width_nsync
         ) + self.start_nsync
-        self.time_axis = (
-            (np.arange(self.n_bins, dtype=np.float64) + 0.5) * self.bin_width
-            + self.start_time
+        self.time_axis_s = (
+            (np.arange(self.n_bins, dtype=np.float64) + 0.5) * self.bin_width_s
+            + self.start_time_s
         )
 
         # Set outputs
@@ -1214,14 +1278,13 @@ class TraceReconstructor:
         # Initialize arrays
         if "photon_count" in self.requested_outputs:
             self.intensity = np.zeros(
-                (self.n_bins, max_detector), dtype=np.uint64
+                (self.n_bins, max_detector_channels), dtype=np.uint64
             )
 
         if "markers" in self.requested_outputs:
-            self.marker_times = {
-                "frame_start": np.array([], dtype=np.uint64),
-                "line_start": np.array([], dtype=np.uint64),
-                "line_stop": np.array([], dtype=np.uint64),
+            # nsync of the markers in the window, per role
+            self.marker_nsyncs = {
+                role: np.array([], dtype=np.uint64) for role in MARKER_ROLES
             }
 
         self.active_detectors = set()
@@ -1240,7 +1303,7 @@ class TraceReconstructor:
 
         # Extract and bin photons by time
         if "photon_count" in self.requested_outputs:
-            photons = get_photons(events)
+            photons = photon_events(events)
 
             # Find bin indices for each photon
             bin_indices = (
@@ -1254,7 +1317,7 @@ class TraceReconstructor:
             valid = (
                 (bin_indices >= 0)
                 & (bin_indices < self.n_bins)
-                & (photons["channel"] < self.max_detector)
+                & (photons["channel"] < self.max_detector_channels)
             )
 
             if np.count_nonzero(valid) > 0:
@@ -1269,52 +1332,32 @@ class TraceReconstructor:
 
         # Extract markers within the time window
         if "markers" in self.requested_outputs:
-            (
-                frame_markers,
-                line_start_markers,
-                line_stop_markers,
-            ) = resolve_markers(events, 4, 1, 2)
-
-            # Filter markers within time range
-            frame_valid = (
-                (frame_markers["nsync"] >= self.start_nsync)
-                & (frame_markers["nsync"] < self.stop_nsync)
-            )
-            line_start_valid = (
-                (line_start_markers["nsync"] >= self.start_nsync)
-                & (line_start_markers["nsync"] < self.stop_nsync)
-            )
-            line_stop_valid = (
-                (line_stop_markers["nsync"] >= self.start_nsync)
-                & (line_stop_markers["nsync"] < self.stop_nsync)
-            )
-
-            self.marker_times["frame_start"] = np.append(
-                self.marker_times["frame_start"],
-                frame_markers["nsync"][frame_valid],
-            )
-            self.marker_times["line_start"] = np.append(
-                self.marker_times["line_start"],
-                line_start_markers["nsync"][line_start_valid],
-            )
-            self.marker_times["line_stop"] = np.append(
-                self.marker_times["line_stop"],
-                line_stop_markers["nsync"][line_stop_valid],
-            )
+            markers = resolve_markers(events, *self.marker_channels)
+            for role, found in zip(MARKER_ROLES, markers):
+                nsync = found["nsync"]
+                in_window = (nsync >= self.start_nsync) & (nsync < self.stop_nsync)
+                self.marker_nsyncs[role] = np.append(
+                    self.marker_nsyncs[role], nsync[in_window]
+                )
 
     def finalize(self) -> xr.Dataset:
         """Finalize and return results as xarray Dataset.
-        
+
         Returns:
             xr.Dataset: Dataset containing:
                 - photon_count: intensity trace with dimensions (time, channel)
-                - frame_start_times: frame start marker times
-                - line_start_times: line start marker times
-                - line_stop_times: line stop marker times
+                - frame_start_marker_times_s, line_start_marker_times_s,
+                  line_stop_marker_times_s: marker times in seconds, each
+                  along its own dimension (frame_start_marker, ...); present,
+                  possibly empty, when "markers" was requested
         """
 
         data = {}
         channels = max(self.active_detectors) + 1 if self.active_detectors else 1
+        coords = {
+            "time": self.time_axis_s,
+            "channel": np.arange(channels),
+        }
 
         if "photon_count" in self.requested_outputs:
             # Trim intensity array to active channels
@@ -1322,38 +1365,10 @@ class TraceReconstructor:
             data["photon_count"] = (("time", "channel"), intensity)
 
         if "markers" in self.requested_outputs:
-            # Convert marker times from nsync to seconds
-            frame_start = (
-                self.marker_times["frame_start"] / self.sync_rate
-            )
-            line_start = (
-                self.marker_times["line_start"] / self.sync_rate
-            )
-            line_stop = (
-                self.marker_times["line_stop"] / self.sync_rate
-            )
-
-            # Always add marker fields, even if empty
-            data["frame_start_times"] = (("frame_marker",), frame_start)
-            data["line_start_times"] = (("line_start_marker",), line_start)
-            data["line_stop_times"] = (("line_stop_marker",), line_stop)
-
-        coords = {
-            "time": self.time_axis,
-            "channel": np.arange(channels),
-        }
-
-        if "markers" in self.requested_outputs:
-            # Always add marker coordinates, even if empty
-            coords["frame_marker"] = np.arange(
-                len(self.marker_times["frame_start"])
-            )
-            coords["line_start_marker"] = np.arange(
-                len(self.marker_times["line_start"])
-            )
-            coords["line_stop_marker"] = np.arange(
-                len(self.marker_times["line_stop"])
-            )
+            for role in MARKER_ROLES:
+                nsyncs = self.marker_nsyncs[role]
+                data[f"{role}_times_s"] = ((role,), nsyncs / self.sync_rate)
+                coords[role] = np.arange(len(nsyncs))
 
         return xr.Dataset(data, coords=coords)
 

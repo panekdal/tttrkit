@@ -48,7 +48,7 @@ SAMPLE_DIR = Path(__file__).with_name("realdata_samples")
 MANIFEST = Path(__file__).with_name("realdata_cases.json")
 SIDECAR_SUFFIX = "_scan_config.json"
 CHUNK_SIZE = 1_000_000
-MAX_DETECTOR_CAP = 8  # bounds memory for inferred configs
+MAX_DETECTOR_CHANNELS_CAP = 8  # bounds memory for inferred configs
 DEFAULT_WORKERS = min(4, os.cpu_count() or 1)
 
 
@@ -119,7 +119,7 @@ def sidecar_config(ptu: Path) -> tuple[dict, dict] | None:
             scan.pop(key, None)
     elif any(scan.get(k) is not None for k in seconds):
         reader, _ = _open(ptu)
-        sync_rate = float(reader.header.tags["TTResult_SyncRate"])
+        sync_rate = reader.header.sync_rate
         for key in seconds:
             if scan.get(key) is not None:
                 scan[key] = int(round(float(scan[key]) * sync_rate))
@@ -128,6 +128,8 @@ def sidecar_config(ptu: Path) -> tuple[dict, dict] | None:
         "frame_start_marker": "frame_start_marker_channel",
         "line_start_marker": "line_start_marker_channel",
         "line_stop_marker": "line_stop_marker_channel",
+        "max_detector": "max_detector_channels",
+        "laser_duty": "scan_duty",
     }
     skip = {"sequences", "tcspc_bins"}
     config = {rename.get(k, k): v for k, v in scan.items() if k not in skip}
@@ -188,22 +190,31 @@ def _open(path: Path):
     from tttrkit.ptuio.reader import TTTRReader
 
     reader = TTTRReader(str(path))
-    wrap = reader.header.tags.get("TTResultFormat_WrapAround", 1024)
-    return reader, T3OverflowCorrector(wraparound=wrap)
+    return reader, T3OverflowCorrector()
 
 
 def infer_config(path: Path) -> dict:
-    from tttrkit.ptuio.decoder import get_photons, resolve_markers
+    from tttrkit.ptuio.config import (
+        DEFAULT_FRAME_START_MARKER_CHANNEL,
+        DEFAULT_LINE_START_MARKER_CHANNEL,
+        DEFAULT_LINE_STOP_MARKER_CHANNEL,
+    )
+    from tttrkit.ptuio.decoder import photon_events, resolve_markers
 
     reader, corr = _open(path)
     line_nsyncs, frame_nsyncs = [], []
     max_channel = 0
     for chunk in reader.iter_chunks(CHUNK_SIZE):
         ev = corr.correct(chunk)
-        frame_m, start_m, _ = resolve_markers(ev, 4, 1, 2)
+        frame_m, start_m, _ = resolve_markers(
+            ev,
+            DEFAULT_FRAME_START_MARKER_CHANNEL,
+            DEFAULT_LINE_START_MARKER_CHANNEL,
+            DEFAULT_LINE_STOP_MARKER_CHANNEL,
+        )
         line_nsyncs.append(start_m["nsync"])
         frame_nsyncs.append(frame_m["nsync"])
-        photons = get_photons(ev)
+        photons = photon_events(ev)
         if len(photons):
             max_channel = max(max_channel, int(photons["channel"].max()))
     line_nsyncs = np.concatenate(line_nsyncs)
@@ -228,7 +239,7 @@ def infer_config(path: Path) -> dict:
         "lines": lines,
         "pixels": int(pix_x) if pix_x else 256,
         "frames": frames,
-        "max_detector": min(max_channel + 1, MAX_DETECTOR_CAP),
+        "max_detector_channels": min(max_channel + 1, MAX_DETECTOR_CHANNELS_CAP),
     }
 
 
@@ -264,6 +275,10 @@ def reconstruct(path: Path, config: dict, recon_kwargs: dict, chunk_size: int) -
     with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(out):
         warnings.simplefilter("always")
         scan = prescan(reader, cfg, chunk_size)
+        rk.update(
+            sync_rate=reader.header.sync_rate,
+            tcspc_resolution=reader.header.tcspc_resolution,
+        )
         rec = ImageReconstructor(
             cfg, **_supported_kwargs(ImageReconstructor.__init__, rk)
         )

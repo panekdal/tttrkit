@@ -1,8 +1,24 @@
-"""Scan configuration and the data-quality warnings issued against it."""
+"""Scan configuration and the data-quality warnings issued against it.
+
+Defaults are only given where one value fits most setups and a wrong one is
+reported (marker channels, frame sync) or where it switches a feature off
+(bidirectional, harmonic_scan, delays). Values that describe the particular
+acquisition, such as lines and pixels, are required.
+"""
 
 import numpy as np
 
+from .decoder import DETECTOR_CHANNELS, check_marker_bit
+
 FRAME_SYNC_MODES = ("count", "validate", "resync")
+
+# Marker inputs of most setups (Abberior, Zeiss, Leica with PicoQuant
+# hardware); configure them when the wiring differs. A marker combining a
+# configured input with an unconfigured one is discarded and counted, and
+# ImageReconstructor warns when that is frequent.
+DEFAULT_FRAME_START_MARKER_CHANNEL = 4
+DEFAULT_LINE_START_MARKER_CHANNEL = 1
+DEFAULT_LINE_STOP_MARKER_CHANNEL = 2
 
 
 class DataQualityWarning(UserWarning):
@@ -26,11 +42,7 @@ def _marker_channel(name: str) -> property:
     attr = f"_{name}"
 
     def fset(self, value: int) -> None:
-        if not isinstance(value, (int, np.integer)):
-            raise TypeError(f"{name} must be an integer marker bit")
-        if value not in (1, 2, 4, 8):
-            raise ValueError(f"{name} must be one of 1, 2, 4, or 8")
-        setattr(self, attr, int(value))
+        setattr(self, attr, check_marker_bit(name, value))
 
     return property(
         lambda self: getattr(self, attr),
@@ -53,7 +65,22 @@ class ScanConfig:
     before delays are applied. ImageReconstructor requires it; if None,
     :func:`tttrkit.ptuio.prescan.prescan_first_frame` estimates it from the
     first frame of the data and fills it in. SegmentReconstructor estimates
-    it from its own chunk when None.
+    it from its own chunk when None. Without line stop markers the estimate
+    is a guess (a fraction of the line period) and a ScanConfigWarning says
+    so.
+
+    ``frames`` is the number of frames reconstructed; reading stops after
+    them, with a DataQualityWarning if more lines follow.
+
+    ``max_detector_channels`` is the number of detector channels kept:
+    photons on channel >= max_detector_channels are discarded (counted, and
+    warned when frequent). The default keeps every channel the record format
+    can hold. It only bounds the output: the reconstruction holds as many
+    channels as the data has photons on, which can be fewer.
+
+    ``scan_duty`` (fraction of the line period during which the beam
+    sweeps the image) is required with ``harmonic_scan``, and only used
+    there.
 
     Frame assignment:
         Lines are assigned to frames by counting line start markers: line k
@@ -83,17 +110,17 @@ class ScanConfig:
 
     def __init__(
         self,
-        lines: int = 512,
-        pixels: int = 512,
+        lines: int,
+        pixels: int,
         frames: int = 1,
-        max_detector: int = 64,
+        max_detector_channels: int = DETECTOR_CHANNELS,
         line_accumulations: tuple = (1,),
         bidirectional: bool = False,
-        frame_start_marker_channel: int = 4,
-        line_start_marker_channel: int = 1,
-        line_stop_marker_channel: int = 2,
+        frame_start_marker_channel: int = DEFAULT_FRAME_START_MARKER_CHANNEL,
+        line_start_marker_channel: int = DEFAULT_LINE_START_MARKER_CHANNEL,
+        line_stop_marker_channel: int = DEFAULT_LINE_STOP_MARKER_CHANNEL,
         harmonic_scan: bool = False,
-        laser_duty: float = 0.6, # used for harmonic correction
+        scan_duty: float | None = None,  # required with harmonic_scan
         line_start_marker_delay: int = 0, # in nsync units
         line_stop_marker_delay: int = 0,
         line_duration: int | None = None,
@@ -107,9 +134,9 @@ class ScanConfig:
         self.lines = lines
         self.pixels = pixels
         self.frames = frames
-        self.max_detector = max_detector
+        self.max_detector_channels = max_detector_channels
         self.harmonic_scan = harmonic_scan
-        self.laser_duty = laser_duty
+        self.scan_duty = scan_duty
         self.line_start_marker_delay = line_start_marker_delay
         self.line_stop_marker_delay = line_stop_marker_delay
         self.line_duration = line_duration
@@ -118,6 +145,27 @@ class ScanConfig:
         self.frame_start_marker_channel = frame_start_marker_channel
         self.line_start_marker_channel = line_start_marker_channel
         self.line_stop_marker_channel = line_stop_marker_channel
+        self.check_harmonic_scan()
+
+    def check_harmonic_scan(self) -> None:
+        """Raise if harmonic_scan is set without a scan_duty."""
+        if self.harmonic_scan and self.scan_duty is None:
+            raise ValueError(
+                "harmonic_scan=True requires scan_duty (the fraction of the "
+                "line period the beam sweeps the image); it cannot be "
+                "estimated from the data."
+            )
+
+    @property
+    def scan_duty(self) -> float | None:
+        """Sweeping fraction of the line period, for harmonic_scan."""
+        return self._laser_duty
+
+    @scan_duty.setter
+    def scan_duty(self, value: float | None) -> None:
+        if value is not None and not 0 < value <= 1:
+            raise ValueError(f"scan_duty must be in (0, 1], got {value}")
+        self._laser_duty = value
 
     frame_start_marker_channel = _marker_channel("frame_start_marker_channel")
     line_start_marker_channel = _marker_channel("line_start_marker_channel")
@@ -188,14 +236,14 @@ class ScanConfig:
             "lines": self.lines,
             "pixels": self.pixels,
             "frames": self.frames,
-            "max_detector": self.max_detector,
+            "max_detector_channels": self.max_detector_channels,
             "line_accumulations": self.line_accumulations,
             "bidirectional": self.bidirectional,
             "frame_start_marker_channel": self.frame_start_marker_channel,
             "line_start_marker_channel": self.line_start_marker_channel,
             "line_stop_marker_channel": self.line_stop_marker_channel,
             "harmonic_scan": self.harmonic_scan,
-            "laser_duty": self.laser_duty,
+            "scan_duty": self.scan_duty,
             "line_start_marker_delay": self.line_start_marker_delay,
             "line_stop_marker_delay": self.line_stop_marker_delay,
             "line_duration": self.line_duration,
@@ -205,24 +253,9 @@ class ScanConfig:
 
     @classmethod
     def from_dict(cls, data):
-        return cls(
-            lines=data.get("lines", 512),
-            pixels=data.get("pixels", 512),
-            frames=data.get("frames", 1),
-            max_detector=data.get("max_detector", 64),
-            line_accumulations=data.get("line_accumulations", (1,)),
-            bidirectional=data.get("bidirectional", False),
-            frame_start_marker_channel=data.get("frame_start_marker_channel", 4),
-            line_start_marker_channel=data.get("line_start_marker_channel", 1),
-            line_stop_marker_channel=data.get("line_stop_marker_channel", 2),
-            harmonic_scan=data.get("harmonic_scan", False),
-            laser_duty=data.get("laser_duty", 0.6),
-            line_start_marker_delay=data.get("line_start_marker_delay", 0),
-            line_stop_marker_delay=data.get("line_stop_marker_delay", 0),
-            line_duration=data.get("line_duration", None),
-            frame_sync=data.get("frame_sync", "resync"),
-            frame_sync_tolerance=data.get("frame_sync_tolerance", 0.1),
-        )
+        """Inverse of to_dict. Missing keys take the defaults of __init__;
+        unknown keys raise TypeError."""
+        return cls(**data)
 
     def __repr__(self):
         return f"ScanConfig({self.to_dict()})"
