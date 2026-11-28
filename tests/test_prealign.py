@@ -1,5 +1,7 @@
 """estimate_bidirectional_prealign on synthetic probe chunks."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -11,15 +13,17 @@ from test_frame_sync import PERIOD, make_stream
 
 def prealign(events, monkeypatch):
     # The probe chunk comes from the reader; hand over the events instead.
-    # line_duration is set, so no pre-scan reads the (absent) reader.
+    # line_duration is set, so no pre-scan reads the reader, which only
+    # supplies the sync rate.
     monkeypatch.setattr(
         calibration, "_read_probe_chunk", lambda *args, **kwargs: (events, 0)
     )
     config = ScanConfig(
         lines=40, pixels=4, bidirectional=True, line_duration=PERIOD * 8 // 10
     )
+    reader = SimpleNamespace(header=SimpleNamespace(sync_rate=40e6))
     return calibration.estimate_bidirectional_prealign(
-        None, config, laser_sync_rate=40e6, verbose=False
+        reader, config, verbose=False
     )
 
 
@@ -30,8 +34,8 @@ def test_line_without_stop_marker(monkeypatch):
     ds = prealign(events, monkeypatch)
     # 39 lines with a stop: each paired with its own interval
     assert ds.sizes["paired_interval"] == 39 - 1  # the last line has no next start
-    np.testing.assert_array_equal(ds["periods_nsync"], PERIOD)
-    np.testing.assert_array_equal(ds["durations_nsync"], PERIOD * 8 // 10)
+    np.testing.assert_array_equal(ds["periods"], PERIOD)
+    np.testing.assert_array_equal(ds["durations"], PERIOD * 8 // 10)
 
 
 def test_no_stop_markers(monkeypatch):

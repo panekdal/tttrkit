@@ -33,8 +33,10 @@ import numpy as np
 from .config import ScanConfig, ScanConfigWarning
 from .decoder import T3OverflowCorrector, resolve_markers
 from .marker_timing import (
+    coincident_stop_issue,
     estimate_line_duration,
     frame_boundary_mismatch,
+    guessed_line_duration_issue,
     line_duration_issue,
 )
 from .reader import TTTRReader
@@ -57,7 +59,9 @@ class FirstFrameScan:
     issues:
         One message per problem found, empty if the data agrees with the
         config; each was also issued as a ScanConfigWarning unless
-        warn=False. Without frame markers the frames are not checked.
+        warn=False. A line duration guessed from the line period (no line
+        stop markers) is one, as are line stop markers coinciding with line
+        starts. Without frame markers the frames are not checked.
     """
 
     line_duration: int | None = None  # nsync units
@@ -71,7 +75,6 @@ def prescan_first_frame(
     reader: TTTRReader,
     config: ScanConfig,
     *,
-    wrap: int | None = None,
     chunk_size: int = 1_000_000,
     warn: bool = True,
 ) -> FirstFrameScan:
@@ -83,8 +86,8 @@ def prescan_first_frame(
         config: The ScanConfig to check. If ``config.line_duration`` is
             None, it is set to the estimate (if one could be made);
             otherwise it is checked: it must not exceed the line period.
-        wrap: Overflow wraparound (default: the header tag
-            TTResultFormat_WrapAround, else 1024).
+            An estimate without line stop markers is a guess and is
+            reported as an issue.
         chunk_size: Records per read.
         warn: Issue every problem found as a ScanConfigWarning.
 
@@ -92,9 +95,7 @@ def prescan_first_frame(
         A FirstFrameScan. If the line duration could not be estimated,
         config.line_duration stays None and ImageReconstructor refuses it.
     """
-    if wrap is None:
-        wrap = reader.header.tags.get("TTResultFormat_WrapAround", 1024)
-    corrector = T3OverflowCorrector(wraparound=wrap)
+    corrector = T3OverflowCorrector()
     raw = reader.iter_chunks(chunk_size, start=reader.offset)
     chunks = (corrector.correct(c) for c in raw)
     return _report(_scan(chunks, config), warn)
@@ -247,6 +248,9 @@ def _line_duration(scan, config, frames, starts, stops, estimate_lines):
         frames, starts, stops, lines_per_frame=config.lines_per_frame
     )
     scan.median_line_period = estimate.median_period
+    issue = coincident_stop_issue(starts, stops)
+    if issue:
+        scan.issues.append(issue)
 
     if config.line_duration is not None:
         scan.line_duration = int(config.line_duration)
@@ -263,3 +267,6 @@ def _line_duration(scan, config, frames, starts, stops, estimate_lines):
     else:
         scan.line_duration = config.line_duration = estimate.duration
         scan.line_duration_source = estimate.source
+        issue = guessed_line_duration_issue(estimate)
+        if issue:
+            scan.issues.append(issue)

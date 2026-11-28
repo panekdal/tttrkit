@@ -5,6 +5,11 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+# Without line stop markers the line duration is guessed as this fraction of
+# the line period (the remainder being the flyback). A guess, so it is
+# reported with a ScanConfigWarning.
+GUESSED_LINE_PHASE = 0.80
+
 
 def frame_boundary_mismatch(lines_before: int, lines_per_frame: int):
     """(frame, mismatch) of a frame marker preceded by ``lines_before`` lines.
@@ -69,17 +74,19 @@ def analyze_stop_marker_timing(
         stops = stops[stops < frame[1]]
 
     intervals = np.diff(starts)
-    # Each line can use only a stop after its start and before its next start.
+    # Each line can use only a stop after its start and at or before its next
+    # start. A stop at the next start ends this line (no flyback gap); a stop
+    # at its own start ends the previous line.
     stop_indices = np.searchsorted(stops, starts[:-1], side="right")
     paired = stop_indices < len(stops)
-    paired[paired] &= stops[stop_indices[paired]] < starts[1:][paired]
+    paired[paired] &= stops[stop_indices[paired]] <= starts[1:][paired]
 
     durations = stops[stop_indices[paired]] - starts[:-1][paired]
     paired_intervals = intervals[paired]
     valid = (
         (durations > 0)
         & (paired_intervals > 0)
-        & (durations < paired_intervals)
+        & (durations <= paired_intervals)
     )
     durations = durations[valid]
     paired_intervals = paired_intervals[valid]
@@ -100,7 +107,7 @@ class LineDurationEstimate:
     """Line duration estimated from line markers (all values in nsync units).
 
     ``source`` is "stop_markers" (median start-to-stop time), "line_period"
-    (``default_phase`` times the median line period, without stop markers)
+    (GUESSED_LINE_PHASE times the median line period, without stop markers)
     or None when nothing could be estimated. ``median_period`` is the median
     start-to-start interval of lines followed by a line of the same frame,
     None if there is none.
@@ -148,13 +155,12 @@ def estimate_line_duration(
     *,
     lines_per_frame: int | None = None,
     first_line: int = 0,
-    default_phase: float = 0.80,
 ) -> LineDurationEstimate:
     """Estimate the line duration from all lines of the given markers.
 
     With line stop markers, the median start-to-stop time; a pause between
-    frames does not affect it. Without, ``default_phase`` times the median
-    line period, from within-frame intervals only (see
+    frames does not affect it. Without, a guess: GUESSED_LINE_PHASE times
+    the median line period, from within-frame intervals only (see
     :func:`within_frame_intervals`).
     """
     periods = within_frame_intervals(
@@ -170,9 +176,38 @@ def estimate_line_duration(
         )
     if median_period is not None:
         return LineDurationEstimate(
-            int(median_period * default_phase), "line_period", median_period
+            int(median_period * GUESSED_LINE_PHASE), "line_period", median_period
         )
     return LineDurationEstimate(None, None, None)
+
+
+def guessed_line_duration_issue(estimate: LineDurationEstimate) -> str | None:
+    """A message if the line duration of ``estimate`` is a guess from the
+    line period (no line stop markers); None otherwise."""
+    if estimate.source != "line_period":
+        return None
+    return (
+        f"No line stop markers: line_duration guessed as "
+        f"{GUESSED_LINE_PHASE:.0%} of the line period, {estimate.duration} "
+        f"of {estimate.median_period:.0f} (nsync units). Set "
+        f"ScanConfig.line_duration if the scanner's value is known."
+    )
+
+
+def coincident_stop_issue(
+    start_nsyncs: NDArray[np.uint64], stop_nsyncs: NDArray[np.uint64]
+) -> str | None:
+    """A message if line stop markers coincide with line starts (same sync
+    period); None otherwise. Each such stop ends the previous line."""
+    stops = np.asarray(stop_nsyncs)
+    n = int(np.count_nonzero(np.isin(stops, start_nsyncs)))
+    if n == 0:
+        return None
+    message = (
+        f"{n} of {len(stops)} line stop markers coincide with a line start "
+        f"(same sync period); each is taken as the stop of the previous line."
+    )
+    return message
 
 
 def line_duration_issue(

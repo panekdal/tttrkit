@@ -9,11 +9,17 @@ readme = "README.md"
 
 dependencies = [
     "numpy",
+    "scipy",
     "xarray",
 ]
 
 [project.optional-dependencies]
+# tttrkit.analysis.visualization
+plot = [
+    "matplotlib",
+]
 dev = [
+    "matplotlib",
     "pytest",
 ]
 
