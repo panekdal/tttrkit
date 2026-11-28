@@ -46,6 +46,30 @@ def with_frame_pauses(events, lines, pause):
     return out
 
 
+def without_flyback_gap(events):
+    """Move every line stop to the end of the line period; where it meets
+    the next line start, merge both into one value-3 marker."""
+    out = events.copy()
+    stops = (out["special"] == 1) & (out["channel"] == 2)
+    out["nsync"][stops] += np.uint64(PERIOD - DURATION)
+    starts = (out["special"] == 1) & (out["channel"] == 1)
+    merged = starts & np.isin(out["nsync"], out["nsync"][stops])
+    out["channel"][merged] = 3
+    absorbed = stops & np.isin(out["nsync"], out["nsync"][merged])
+    out = out[~absorbed]
+    return out[np.argsort(out["nsync"], kind="stable")]
+
+
+@pytest.mark.parametrize("chunk", [None, 1, 7])
+def test_stream_without_flyback_gap(chunk):
+    events = without_flyback_gap(make_stream())
+    assert np.count_nonzero(events["channel"][events["special"] == 1] == 3)
+    result, config, issued = scan(events, chunk)
+    assert result.line_duration == PERIOD
+    assert result.line_duration_source == "stop_markers"
+    assert len(result.issues) == 1 and len(issued) == 1
+
+
 @pytest.mark.parametrize("frame_marker", ["start", "end"])
 @pytest.mark.parametrize("chunk", [None, 1, 7])
 def test_clean_stream(frame_marker, chunk):

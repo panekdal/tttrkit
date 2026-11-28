@@ -33,6 +33,7 @@ import numpy as np
 from .config import ScanConfig, ScanConfigWarning
 from .decoder import T3OverflowCorrector, resolve_markers
 from .marker_timing import (
+    coincident_stop_issue,
     estimate_line_duration,
     frame_boundary_mismatch,
     guessed_line_duration_issue,
@@ -59,8 +60,8 @@ class FirstFrameScan:
         One message per problem found, empty if the data agrees with the
         config; each was also issued as a ScanConfigWarning unless
         warn=False. A line duration guessed from the line period (no line
-        stop markers) is one. Without frame markers the frames are not
-        checked.
+        stop markers) is one, as are line stop markers coinciding with line
+        starts. Without frame markers the frames are not checked.
     """
 
     line_duration: int | None = None  # nsync units
@@ -247,6 +248,9 @@ def _line_duration(scan, config, frames, starts, stops, estimate_lines):
         frames, starts, stops, lines_per_frame=config.lines_per_frame
     )
     scan.median_line_period = estimate.median_period
+    issue = coincident_stop_issue(starts, stops)
+    if issue:
+        scan.issues.append(issue)
 
     if config.line_duration is not None:
         scan.line_duration = int(config.line_duration)

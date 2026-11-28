@@ -78,9 +78,10 @@ def resolve_markers(
 
     Marker channels are bitmasks, so a single event may represent multiple
     physical marker inputs. Frame/start and frame/stop coincidences are valid.
-    A line start coinciding with a line stop (e.g. value 3) is a line start:
-    the stop ends the previous line, as on scanners without a flyback gap
-    between lines. It is therefore not returned as a line stop.
+    A line start coinciding with a line stop (e.g. value 3) is returned as
+    both: the stop ends the previous line and the start begins the next, as
+    on scanners without a flyback gap between lines, or with a gap shorter
+    than one sync period.
     Markers that include an unconfigured input are discarded as glitches.
     """
     check_marker_bit("frame_start_marker_channel", frame_start_marker_channel)
@@ -110,7 +111,7 @@ def resolve_markers(
     return (
         markers[has_frame],
         markers[has_line_start],
-        markers[has_line_stop & ~has_line_start],
+        markers[has_line_stop],
     )
 
 

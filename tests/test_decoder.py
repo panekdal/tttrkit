@@ -18,10 +18,10 @@ def test_resolve_markers_allows_frame_coincidences_and_rejects_invalid_bits():
 
     assert frame["channel"].tolist() == [5, 6, 7, 4]
     assert starts["channel"].tolist() == [5, 7, 1]
-    assert stops["channel"].tolist() == [6, 2]
+    assert stops["channel"].tolist() == [6, 7, 2]
 
 
-def test_resolve_markers_treats_start_stop_coincidence_as_line_start():
+def test_resolve_markers_returns_start_stop_coincidence_as_both():
     # Scanners without a flyback gap: the stop of one line coincides with
     # the start of the next
     events = make_markers([1, 3, 3, 2])
@@ -30,7 +30,7 @@ def test_resolve_markers_treats_start_stop_coincidence_as_line_start():
 
     assert len(frame) == 0
     assert starts["nsync"].tolist() == [0, 1, 2]
-    assert stops["nsync"].tolist() == [3]
+    assert stops["nsync"].tolist() == [1, 2, 3]
 
 
 def test_resolve_markers_rejects_non_marker_events():

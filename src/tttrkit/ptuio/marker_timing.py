@@ -74,17 +74,19 @@ def analyze_stop_marker_timing(
         stops = stops[stops < frame[1]]
 
     intervals = np.diff(starts)
-    # Each line can use only a stop after its start and before its next start.
+    # Each line can use only a stop after its start and at or before its next
+    # start. A stop at the next start ends this line (no flyback gap); a stop
+    # at its own start ends the previous line.
     stop_indices = np.searchsorted(stops, starts[:-1], side="right")
     paired = stop_indices < len(stops)
-    paired[paired] &= stops[stop_indices[paired]] < starts[1:][paired]
+    paired[paired] &= stops[stop_indices[paired]] <= starts[1:][paired]
 
     durations = stops[stop_indices[paired]] - starts[:-1][paired]
     paired_intervals = intervals[paired]
     valid = (
         (durations > 0)
         & (paired_intervals > 0)
-        & (durations < paired_intervals)
+        & (durations <= paired_intervals)
     )
     durations = durations[valid]
     paired_intervals = paired_intervals[valid]
@@ -190,6 +192,22 @@ def guessed_line_duration_issue(estimate: LineDurationEstimate) -> str | None:
         f"of {estimate.median_period:.0f} (nsync units). Set "
         f"ScanConfig.line_duration if the scanner's value is known."
     )
+
+
+def coincident_stop_issue(
+    start_nsyncs: NDArray[np.uint64], stop_nsyncs: NDArray[np.uint64]
+) -> str | None:
+    """A message if line stop markers coincide with line starts (same sync
+    period); None otherwise. Each such stop ends the previous line."""
+    stops = np.asarray(stop_nsyncs)
+    n = int(np.count_nonzero(np.isin(stops, start_nsyncs)))
+    if n == 0:
+        return None
+    message = (
+        f"{n} of {len(stops)} line stop markers coincide with a line start "
+        f"(same sync period); each is taken as the stop of the previous line."
+    )
+    return message
 
 
 def line_duration_issue(
